@@ -1,12 +1,13 @@
 import hashlib
 import os
 import socket
+import ssl
 
-HOST = '127.0.0.1'
+HOST = "127.0.0.1"
 PORT = 9000
 BUFFER_SIZE = 4096
 HEADER_SIZE = 1024
-
+	
 
 def send_file(file_path):
     # 1. Validate file existence
@@ -17,7 +18,7 @@ def send_file(file_path):
     # 2. Extract file metadata and compute SHA-256 hash
     file_size = os.path.getsize(file_path)
     filename = os.path.basename(file_path)
-
+  	
     sha256_hash = hashlib.sha256()
     print(f"[*] Reading '{filename}' and calculating SHA-256...")
 
@@ -41,35 +42,48 @@ def send_file(file_path):
 
     # 4. Connect to server and transmit
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            print(f"[*] Connecting to server at {HOST}:{PORT}...")
-            client_socket.connect((HOST, PORT))
+        print(f"[*] Connecting to server at {HOST}:{PORT}...")
 
-            # Send fixed-size header
-            client_socket.sendall(header_padded)
-            print("[+] Header sent.")
+        raw_socket = socket.create_connection((HOST, PORT))
 
-            # Send raw file payload in chunks
-            bytes_sent = 0
-            with open(file_path, "rb") as f:
-                while chunk := f.read(BUFFER_SIZE):
-                    client_socket.sendall(chunk)
-                    bytes_sent += len(chunk)
-                    print(
-                        f"\r[*] Progress: {bytes_sent}/{file_size} bytes sent",
-                        end="",
-                    )
+        context = ssl.create_default_context()
 
-            print("\n[+] File transmission complete. Waiting for server response...")
+        # LOCAL DEVELOPMENT TESTING: BYPASS CERTIFICATE CHECK
+        # (Remove or replace with proper CA load in production)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
 
-            # Receive confirmation status back from server
-            response = client_socket.recv(BUFFER_SIZE).decode("utf-8")
-            print(f"[Server Response]: {response}")
+        # FIX: Do not pass IP string as server_hostname when check_hostname is False
+        client_socket = context.wrap_socket(raw_socket)
+
+        # Send fixed-size header
+        client_socket.sendall(header_padded)
+        print("[+] Header sent.")
+
+        # Send TLS-encrypted file payload in chunks
+        bytes_sent = 0
+        with open(file_path, "rb") as f:
+            while chunk := f.read(BUFFER_SIZE):
+                client_socket.sendall(chunk)
+                bytes_sent += len(chunk)
+                print(
+                    f"\r[*] Progress: {bytes_sent}/{file_size} bytes sent",
+                    end="",
+                )
+
+        print(
+            "\n[+] File transmission complete. Waiting for server response..."
+        )
+
+        # Receive confirmation status back from server
+        response = client_socket.recv(BUFFER_SIZE).decode("utf-8")
+        print(f"[Server Response]: {response}")
+        client_socket.close()
 
     except Exception as e:
         print(f"[-] Network error: {e}")
 
 
 if __name__ == "__main__":
-    file_input = input("Enter path of the file to send: ").strip('"\'')
+    file_input = input("Enter path of the file to send: ").strip("\"'")
     send_file(file_input)
