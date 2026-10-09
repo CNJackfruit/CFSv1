@@ -12,7 +12,7 @@ HEADER_SIZE = 1024
 def send_file(file_path):
     # 1. Validate file existence
     if not os.path.exists(file_path):
-        print(f"[-] Error: File '{file_path}' does not exist.")
+        print(f"[-] Error: File '{file_path}' does not exist lala.")
         return
 
     # 2. Extract file metadata and compute SHA-256 hash
