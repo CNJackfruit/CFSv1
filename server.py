@@ -42,49 +42,36 @@ class ProtocolReader:
         del self.buffer[:n]  # Remove the consumed body bytes
         return data
 
-def handle_client(conn, addr):
-    client_id = f"{addr[0]}:{addr[1]}"
-    print(f"[+] Thread started for client {client_id}")
+def handle_upload(reader, conn, client_id, header_data):
+    """Handles the file upload logic."""
+    filename = header_data.get("name")
+    file_size = header_data.get("size")
+    expected_sha256 = header_data.get("sha256")
 
-    save_filename = None
+    print(f"[*] [{client_id}] Upload request for: '{filename}' ({file_size} bytes)")
+    print(f"[*] [{client_id}] Expected SHA256: {expected_sha256}")
+
+    os.makedirs("database", exist_ok=True)
+    
+    # FIX: Use client_id (safely formatted) instead of missing 'addr'
+    safe_client_id = client_id.replace(":", "_")
+    save_filename = os.path.join("database", f"saved_{safe_client_id}_{os.path.basename(filename)}")
+    
+    sha256_acc = hashlib.sha256()
+    received_bytes = 0
 
     try:
-        reader = ProtocolReader(conn)
-        
-        # FIX: Read the header line using recv_line since headers are newline-terminated strings
-        header_bytes = reader.recv_exact(1024)
-
-        if not header_bytes:
-            print(f"[-] [{client_id}] Empty header received. Closing connection.")
-            return
-
-        header_str = header_bytes.decode("utf-8").strip()
-        expected_sha256, file_size_str, filename = header_str.split("|")
-        file_size = int(file_size_str)
-
-        print(f"[*] [{client_id}] Receiving: '{filename}' ({file_size} bytes)")
-        print(f"[*] [{client_id}] Expected SHA256: {expected_sha256}")
-
-        os.makedirs("database", exist_ok=True)
-        save_filename = os.path.join("database", f"saved_{addr[1]}_{os.path.basename(filename)}")
-        sha256_acc = hashlib.sha256()
-        received_bytes = 0
-
         with open(save_filename, "wb") as f:
             while received_bytes < file_size:
                 chunk_limit = min(BUFFER_SIZE, file_size - received_bytes)
-                print(f"[*] Waiting for {chunk_limit} bytes (Total received: {received_bytes}/{file_size})")
-        
                 chunk = reader.recv_exact(chunk_limit)
 
                 if not chunk:
-                    print("[-] Connection closed prematurely by client.")
                     break
 
                 f.write(chunk)
                 sha256_acc.update(chunk)
                 received_bytes += len(chunk)
-                print(f"[+] Successfully read chunk of {len(chunk)} bytes.")
 
         calculated_sha256 = sha256_acc.hexdigest()
 
@@ -94,17 +81,43 @@ def handle_client(conn, addr):
         else:
             print(f"[-] [{client_id}] Hash mismatch or incomplete transfer!")
             conn.sendall(b"ERROR: Hash or size mismatch.")
-
             if os.path.exists(save_filename):
                 os.remove(save_filename)
-                print(f"[*] [{client_id}] Deleted invalid file: '{save_filename}'")
+        
+    except Exception as e:
+        print(f"[-] [{client_id}] Upload error: {e}")
+        if os.path.exists(save_filename):
+            os.remove(save_filename)
+        raise e
+        
+
+def handle_client(conn, addr):
+    client_id = f"{addr[0]}:{addr[1]}"
+    print(f"[+] Thread started for client {client_id}")
+
+    try:
+        reader = ProtocolReader(conn)
+        
+        # Read the JSON command line up to the '\n'
+        header_bytes = reader.recv_line()
+        if not header_bytes:
+            print(f"[-] [{client_id}] Empty header received. Closing connection.")
+            return
+
+        header_str = header_bytes.decode("utf-8").strip()
+        header_data = json.loads(header_str)
+        
+        cmd = header_data.get("cmd")
+
+        # Command routing
+        if cmd == "UPLOAD":
+            handle_upload(reader, conn, client_id, header_data)
+        else:
+            print(f"[-] [{client_id}] Unknown or unsupported command: {cmd}")
+            conn.sendall(b"ERROR: Unsupported command.")
 
     except Exception as e:
-        print(f"[-] [{client_id}] Error handling transfer: {e}")
-
-        if save_filename and os.path.exists(save_filename):
-            os.remove(save_filename)
-            print(f"[*] [{client_id}] Cleaned up partial file: '{save_filename}'")
+        print(f"[-] [{client_id}] Error handling client session: {e}")
     finally:
         conn.close()
         print(f"[-] Connection with {client_id} closed.")

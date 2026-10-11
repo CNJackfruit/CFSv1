@@ -2,12 +2,13 @@ import hashlib
 import os
 import socket
 import ssl
+import json
 
 HOST = "127.0.0.1"
 PORT = 9000
 BUFFER_SIZE = 4096
 HEADER_SIZE = 1024
-	
+
 
 def send_file(file_path):
     # 1. Validate file existence
@@ -29,16 +30,22 @@ def send_file(file_path):
     expected_sha256 = sha256_hash.hexdigest()
     print(f"[*] Calculated SHA256: {expected_sha256}")
 
-    # 3. Format header: SHA256|filesize|filename
-    # Padding with spaces to match exact HEADER_SIZE (1024 bytes) expected by server
-    header_str = f"{expected_sha256}|{file_size}|{filename}"
+    header_dict = {
+    "cmd":"UPLOAD",
+    "name":filename,
+    "size":file_size,
+    "sha256":expected_sha256
+    }
+
+    header_str = json.dumps(header_dict)+"\n"
     header_bytes = header_str.encode("utf-8")
+
+    
+
 
     if len(header_bytes) > HEADER_SIZE:
         print("[-] Error: Header metadata exceeds maximum header size!")
         return
-
-    header_padded = header_bytes.ljust(HEADER_SIZE, b" ")
 
     # 4. Connect to server and transmit
     try:
@@ -56,10 +63,9 @@ def send_file(file_path):
         # FIX: Do not pass IP string as server_hostname when check_hostname is False
         client_socket = context.wrap_socket(raw_socket)
 
-        # Send fixed-size header
-        client_socket.sendall(header_padded)
-        print("[+] Header sent.")
-
+        client_socket.sendall(header_bytes)
+        print("[+] JSON command Header sent.")
+        
         # Send TLS-encrypted file payload in chunks
         bytes_sent = 0
         with open(file_path, "rb") as f:
