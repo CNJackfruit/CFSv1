@@ -5,10 +5,29 @@ import socket
 import ssl
 import struct
 import threading
+import argparse
 
-HOST = "127.0.0.1"
-PORT = 9000
+
+
+HOST = "0.0.0.0"
+
 BUFFER_SIZE = 4096
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Modular TLS File Transfer Server")
+    parser.add_argument(
+        "--port", 
+        type=int, 
+        default=9000, 
+        help="Port to listen on (default: 9000)"
+    )
+    parser.add_argument(
+        "--storage", 
+        type=str, 
+        default="storage/", 
+        help="Directory path for file storage (default: storage/)"
+    )
+    return parser.parse_args()
 
 class ProtocolReader:
     def __init__(self, sock):
@@ -42,7 +61,8 @@ class ProtocolReader:
         del self.buffer[:n]  # Remove the consumed body bytes
         return data
 
-def handle_upload(reader, conn, client_id, header_data):
+def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR):
+
     """Handles the file upload logic."""
     filename = header_data.get("name")
     file_size = header_data.get("size")
@@ -91,38 +111,56 @@ def handle_upload(reader, conn, client_id, header_data):
         raise e
         
 
-def handle_client(conn, addr):
+def handle_client(conn, addr,STORAGE_DIR):
     client_id = f"{addr[0]}:{addr[1]}"
     print(f"[+] Thread started for client {client_id}")
 
+    conn.settimeout(60.0)
     try:
         reader = ProtocolReader(conn)
         
-        # Read the JSON command line up to the '\n'
-        header_bytes = reader.recv_line()
-        if not header_bytes:
-            print(f"[-] [{client_id}] Empty header received. Closing connection.")
-            return
+        while True:
+            header_bytes = reader.recv_line()
+            if not header_bytes:
+                break
 
-        header_str = header_bytes.decode("utf-8").strip()
-        header_data = json.loads(header_str)
-        
-        cmd = header_data.get("cmd")
+            header_str = header_bytes.decode("utf-8").strip()
+            header_data = json.loads(header_str)
+            cmd = header_data.get("cmd")
 
-        # Command routing
-        if cmd == "UPLOAD":
-            handle_upload(reader, conn, client_id, header_data)
-        else:
-            print(f"[-] [{client_id}] Unknown or unsupported command: {cmd}")
-            conn.sendall(b"ERROR: Unsupported command.")
+            print(f"[*] [{client_id}] Received command: {cmd}")
 
+            # Command routing
+            if cmd == "LOGIN":
+                username = header_data.get("username")
+                print(f"[*] [{client_id}] Fake login received for user: {username}")
+                conn.sendall(b"SUCCESS: Fake login approved.\n")
+
+            elif cmd == "UPLOAD":
+                handle_upload(reader, conn, client_id, header_data, STORAGE_DIR)
+
+            elif cmd == "LIST":
+                conn.sendall(b"LIST stub: No files implemented yet.\n")
+
+            elif cmd == "DOWNLOAD":
+                conn.sendall(b"DOWNLOAD stub: Not implemented yet.\n")
+
+            elif cmd == "QUIT":
+                print(f"[*] [{client_id}] Client requested quit.")
+                break
+            else:
+                print(f"[-] [{client_id}] Unknown command: {cmd}")
+                conn.sendall(b"ERROR: Unsupported command.\n")
+
+    except socket.timeout:
+        print(f"[-] [{client_id}] Connection timed out due to inactivity.")
     except Exception as e:
         print(f"[-] [{client_id}] Error handling client session: {e}")
     finally:
         conn.close()
         print(f"[-] Connection with {client_id} closed.")
 
-def start_server():
+def start_server(PORT,STORAGE_DIR):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -138,12 +176,13 @@ def start_server():
     while True:
         raw_conn, addr = server.accept()
         print(f"\n[*] Client connected from {addr[0]}:{addr[1]}")
-
+        print(f"[*] Storage directory set to: {STORAGE_DIR}")
+        
         try:
             tls_conn = server_context.wrap_socket(raw_conn, server_side=True)
 
             client_thread = threading.Thread(
-                target=handle_client, args=(tls_conn, addr), daemon=True
+                target=handle_client, args=(tls_conn, addr,STORAGE_DIR), daemon=True
             )
             client_thread.start()
 
@@ -155,4 +194,7 @@ def start_server():
             raw_conn.close()
 
 if __name__ == "__main__":
-    start_server()
+    args = parse_args()
+    PORT = args.port
+    STORAGE_DIR = args.storage
+    start_server(PORT,STORAGE_DIR)
