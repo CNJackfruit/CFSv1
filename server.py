@@ -61,7 +61,7 @@ class ProtocolReader:
         del self.buffer[:n]  # Remove the consumed body bytes
         return data
 
-def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR):
+def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
 
     """Handles the file upload logic."""
     filename = header_data.get("name")
@@ -96,6 +96,7 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR):
         calculated_sha256 = sha256_acc.hexdigest()
 
         if received_bytes == file_size and calculated_sha256 == expected_sha256:
+            
             print(f"[+] [{client_id}] Success! Saved to '{save_filename}'. SHA256 verified")
             conn.sendall(b"SUCCESS: File received and verified by server.")
         else:
@@ -109,13 +110,15 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR):
         if os.path.exists(save_filename):
             os.remove(save_filename)
         raise e
-        
+ 
 
-def handle_client(conn, addr,STORAGE_DIR):
+def handle_client(conn, addr, STORAGE_DIR):
     client_id = f"{addr[0]}:{addr[1]}"
     print(f"[+] Thread started for client {client_id}")
 
     conn.settimeout(60.0)
+    login_user = None  # <--- FIXED: Defined outside the loop to persist state across commands
+
     try:
         reader = ProtocolReader(conn)
         
@@ -129,28 +132,39 @@ def handle_client(conn, addr,STORAGE_DIR):
             cmd = header_data.get("cmd")
 
             print(f"[*] [{client_id}] Received command: {cmd}")
-
+            
             # Command routing
             if cmd == "LOGIN":
-                username = header_data.get("username")
-                print(f"[*] [{client_id}] Fake login received for user: {username}")
-                conn.sendall(b"SUCCESS: Fake login approved.\n")
+                username = header_data.get("username") # or "user" based on your JSON format
+                print(f"[*] [{client_id}] Login received for user: {username}")
+                login_user = username  # Persists for this connection
+                conn.sendall(b'{"status": "OK"}\n')
 
             elif cmd == "UPLOAD":
-                handle_upload(reader, conn, client_id, header_data, STORAGE_DIR)
+                if not login_user:
+                    conn.sendall(b'{"status": "ERROR", "msg": "not logged in"}\n')
+                    continue
+                handle_upload(reader, conn, client_id, header_data, STORAGE_DIR, owner=login_user)
 
             elif cmd == "LIST":
-                conn.sendall(b"LIST stub: No files implemented yet.\n")
+                if not login_user:
+                    conn.sendall(b'{"status": "ERROR", "msg": "not logged in"}\n')
+                    continue
+                # Implement LIST logic here
+                conn.sendall(b'{"status": "ERROR", "msg": "LIST not implemented yet"}\n')
 
             elif cmd == "DOWNLOAD":
-                conn.sendall(b"DOWNLOAD stub: Not implemented yet.\n")
+                if not login_user:
+                    conn.sendall(b'{"status": "ERROR", "msg": "not logged in"}\n')
+                    continue
+                conn.sendall(b'{"status": "ERROR", "msg": "DOWNLOAD not implemented yet"}\n')
 
             elif cmd == "QUIT":
                 print(f"[*] [{client_id}] Client requested quit.")
                 break
             else:
                 print(f"[-] [{client_id}] Unknown command: {cmd}")
-                conn.sendall(b"ERROR: Unsupported command.\n")
+                conn.sendall(b'{"status": "ERROR", "msg": "Unsupported command"}\n')
 
     except socket.timeout:
         print(f"[-] [{client_id}] Connection timed out due to inactivity.")
@@ -159,6 +173,8 @@ def handle_client(conn, addr,STORAGE_DIR):
     finally:
         conn.close()
         print(f"[-] Connection with {client_id} closed.")
+
+### THE SERVER DOESNT REPSOND WITHOUT LOGIN COMMAND FIRST THE login_user variable is set to None and we can verify this by using netcat and sending the commands directly without login
 
 def start_server(PORT,STORAGE_DIR):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
