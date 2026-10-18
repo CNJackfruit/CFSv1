@@ -6,8 +6,7 @@ import ssl
 import struct
 import threading
 import argparse
-
-
+import metadata
 
 HOST = "0.0.0.0"
 
@@ -71,17 +70,20 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
     print(f"[*] [{client_id}] Upload request for: '{filename}' ({file_size} bytes)")
     print(f"[*] [{client_id}] Expected SHA256: {expected_sha256}")
 
-    os.makedirs("database", exist_ok=True)
+    os.makedirs(STORAGE_DIR, exist_ok=True)
     
-    # FIX: Use client_id (safely formatted) instead of missing 'addr'
-    safe_client_id = client_id.replace(":", "_")
-    save_filename = os.path.join("database", f"saved_{safe_client_id}_{os.path.basename(filename)}")
+    clean_filename = os.path.basename(filename)
+    
+    save_filename = os.path.join(STORAGE_DIR, clean_filename)
+    
+    safe_client_id = client_id.replace(":","_")
+    temp_save_filename = f"{save_filename}.part.{safe_client_id}"
     
     sha256_acc = hashlib.sha256()
     received_bytes = 0
 
     try:
-        with open(save_filename, "wb") as f:
+        with open(temp_save_filename, "wb") as f:
             while received_bytes < file_size:
                 chunk_limit = min(BUFFER_SIZE, file_size - received_bytes)
                 chunk = reader.recv_exact(chunk_limit)
@@ -97,13 +99,29 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
 
         if received_bytes == file_size and calculated_sha256 == expected_sha256:
             
-            print(f"[+] [{client_id}] Success! Saved to '{save_filename}'. SHA256 verified")
-            conn.sendall(b"SUCCESS: File received and verified by server.")
+            # Just pass where the file is, where it's going, and its stats
+            success, msg = metadata.add_or_update(
+                temp_save_filename, 
+                save_filename, 
+                owner, 
+                file_size, 
+                calculated_sha256
+            )
+            
+            if success:
+                print(f"[+] [{client_id}] Success! Saved to '{save_filename}'. SHA256 verified")
+                conn.sendall(msg.encode('utf-8') + b"\n")
+            else:
+                print(f"[-] [{client_id}] Denied: {msg}")
+                conn.sendall(msg.encode('utf-8') + b"\n")
+                if os.path.exists(temp_save_filename):
+                    os.remove(temp_save_filename)
+            
         else:
             print(f"[-] [{client_id}] Hash mismatch or incomplete transfer!")
-            conn.sendall(b"ERROR: Hash or size mismatch.")
-            if os.path.exists(save_filename):
-                os.remove(save_filename)
+            conn.sendall(b"ERROR: Hash or size mismatch.\n")
+            if os.path.exists(temp_save_filename):
+                os.remove(temp_save_filename)
         
     except Exception as e:
         print(f"[-] [{client_id}] Upload error: {e}")
@@ -177,6 +195,7 @@ def handle_client(conn, addr, STORAGE_DIR):
 ### THE SERVER DOESNT REPSOND WITHOUT LOGIN COMMAND FIRST THE login_user variable is set to None and we can verify this by using netcat and sending the commands directly without login
 
 def start_server(PORT,STORAGE_DIR):
+    metadata.load()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 

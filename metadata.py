@@ -6,34 +6,64 @@ from datetime import datetime
 METADATA_FILE = "metadata.json"
 metadata_lock = threading.Lock()
 
-def add_or_update_metadata(filename, owner, size, sha256_hex):
+_metatdata_cache = {}
+
+def load():
+    """Loads the JSON file into the memory at the server start up"""
+    global _metadata_cache
     with metadata_lock:
-        data = {}
         if os.path.exists(METADATA_FILE):
             try:
-                with open(METADATA_FILE, "r") as f:
-                    data = json.load(f)
+                with open(METADATA_FILE,"r") as f:
+                    _metadata_cache = json.load(f)
+                print("[*] Loaded metadata.json.")
             except json.JSONDecodeError:
-                # Fallback if file is somehow empty or corrupted
-                data = {}
+                _metadata_cache = {}
+            
+        else:
+            _metadata_cache = {}
+        
+def list_all():
+    with metadata_lock:
+        return _metadata_cache.copy()
 
-        # Check if file already exists to preserve download count if overwritten
-        downloads = 0
-        if filename in data:
-            downloads = data[filename].get("downloads", 0)
+def get(name):
+    with metadata_lock:
+        return _metadata_cache.get(name)
 
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        data[filename] = {
+def add_or_update(temp_filepath, final_filepath, owner, size, sha256_hex):
+    """Handles the owner check, physical file swap, and metadata update under one lock."""
+    name=os.path.basename(final_filepath)
+    
+    global _metadata_cache
+    
+    with metadata_lock:
+        # 1. Owner Check
+        if name in _metadata_cache:
+            if _metadata_cache[name].get("owner") != owner:
+                return False, "ERROR: You are not the owner of this file."
+                
+        # 2. Rename (Swap) the physical file
+        try:
+            os.replace(temp_filepath, final_filepath)
+        except OSError as e:
+            return False, f"ERROR: File system error - {e}"
+            
+        # 3. Update the metadata dictionary
+        downloads = _metadata_cache.get(name, {}).get("downloads", 0)
+        
+        _metadata_cache[name] = {
             "owner": owner,
             "size": size,
             "sha256": sha256_hex,
-            "uploaded": current_time,
+            "uploaded": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "downloads": downloads
         }
-
-        # Safe atomic write using a temporary file and os.replace
-        temp_file = METADATA_FILE + ".tmp"
-        with open(temp_file, "w") as f:
-            json.dump(data, f, indent=4)
-        os.replace(temp_file, METADATA_FILE)
+        
+        # 4. Safely save to JSON
+        temp_meta = METADATA_FILE + ".tmp"
+        with open(temp_meta, "w") as f:
+            json.dump(_metadata_cache, f, indent=4)
+        os.replace(temp_meta, METADATA_FILE)
+        
+        return True, "SUCCESS: File received and verified by server."
