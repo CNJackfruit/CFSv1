@@ -4,11 +4,14 @@ import socket
 import ssl
 import json
 import threading 
+from utils import ProtocolReader
 
 HOST = "0.0.0.0"
 PORT = 8080
 BUFFER_SIZE = 4096
 HEADER_SIZE = 1024
+
+
 
 def create_secure_connection():
     """Helper function to establish a secure SSL socket connection."""
@@ -21,23 +24,105 @@ def create_secure_connection():
     
     return context.wrap_socket(raw_socket)
 
-def perform_login(sock):
-  """Mandatory fake login gate that always returns True."""
-  print("\n--- AUTHENTICATION REQUIRED ---")
-  username = input("Username: ").strip()
-  password = input("Password: ").strip()
+def perform_login(sock, reader):
+    """Handles the initial authentication loop before granting menu access."""
+    while True:
+        print("\n--- AUTHENTICATION ---")
+        print("1. Login")
+        print("2. Register")
+        print("3. Quit")
+        
+        choice = input("Select an option: ").strip()
+        
+        if choice == "3":
+            return False
+            
+        if choice not in ["1", "2"]:
+            print("[-] Invalid option.")
+            continue
+            
+        username = input("Username: ").strip()
+        
+        # You can use getpass for hidden password typing if you want: 
+        # import getpass; password = getpass.getpass("Password: ")
+        password = input("Password: ").strip() 
+        
+        if not username or not password:
+            print("[-] Username and password cannot be empty.")
+            continue
 
-  # Send login command to server over persistent socket
-  header_dict = {"cmd": "LOGIN", "username": username, "password": password}
-  sock.sendall((json.dumps(header_dict) + "\n").encode("utf-8"))
+        cmd = "LOGIN" if choice == "1" else "REGISTER"
+        
+        # 1. Send the credentials to the server
+        request = {"cmd": cmd, "username": username, "password": password}
+        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        
+        # 2. Read the server's response
+        response_bytes = reader.recv_line()
+        if not response_bytes:
+            print("[-] Server disconnected.")
+            return False
+            
+        response = json.loads(response_bytes.decode("utf-8").strip())
+        
+        if response.get("status") == "OK":
+            print(f"[+] {response.get('msg')}")
+            if cmd == "LOGIN":
+                return True  # Access granted, proceeds to main menu
+            # If they just registered, loop back so they can actually log in
+        else:
+            print(f"[-] {response.get('msg')}")
 
-  # Receive server response
-  response = sock.recv(BUFFER_SIZE).decode("utf-8")
-  print(f"[Server Response]: {response.strip()}")
-
-  return True
+def handle_download(sock, reader):
+    """Requests a file from the server and downloads it safely."""
+    filename = input("Enter the filename to download: ").strip()
+    if not filename:
+        return
+        
+    # 1. Send the DOWNLOAD command
+    command = {"cmd": "DOWNLOAD", "name": filename}
+    sock.sendall((json.dumps(command) + "\n").encode("utf-8"))
     
-def handle_upload(sock):
+    # 2. Read the server's response header
+    response_bytes = reader.recv_line()
+    if not response_bytes:
+        print("[-] Server disconnected.")
+        return
+        
+    response = json.loads(response_bytes.decode("utf-8").strip())
+    
+    # Check if the server rejected it (like your missing file scenario)
+    if response.get("status") == "ERROR":
+        print(f"[-] Server Error: {response.get('msg')}")
+        return
+        
+    file_size = response.get("size")
+    expected_sha256 = response.get("sha256")
+    
+    # Create a local downloads folder to avoid clutter
+    os.makedirs("client_downloads", exist_ok=True)
+    save_path = os.path.join("client_downloads", filename)
+    
+    print(f"[*] Downloading '{filename}' ({file_size} bytes)...")
+    
+    # 3. Download the exact bytes using ProtocolReader and verify the hash
+    sha256_acc = hashlib.sha256()
+    
+    with open(save_path, "wb") as f:
+        file_data = reader.recv_exact(file_size)
+        f.write(file_data)
+        sha256_acc.update(file_data)
+        
+    calculated_sha256 = sha256_acc.hexdigest()
+    
+    if calculated_sha256 == expected_sha256:
+        print(f"[+] Success! File saved to '{save_path}'")
+        print(f"[+] SHA256 match: {calculated_sha256}")
+    else:
+        print("[-] Hash mismatch! The file was corrupted during transfer.")
+        os.remove(save_path) # Instantly delete the bad file
+
+def handle_upload(sock,reader):
     """Handles the UPLOAD command logic."""
     file_path = input("Enter path of the file to send: ").strip("\"'")
     
@@ -91,24 +176,57 @@ def handle_upload(sock):
         print(f"[-] Network error: {e}")
         
      
-def handle_list(sock):
-    """Placeholder for LIST functionality."""
-    print("[*] LIST feature selected. (Implement logic here)")
-
-def handle_download(sock):
-    """Placeholder for DOWNLOAD functionality."""
-    print("[*] DOWNLOAD feature selected. (Implement logic here)")
+def handle_list(sock,reader):
+    """Requests the file list from the server and prints it."""
     
+    command = {"cmd":"LIST"}
+    sock.sendall((json.dumps(command)+"\n").encode("utf-8"))
+    
+    response_bytes = reader.recv_line()
+    if not response_bytes:
+        print("[-] Server disconncted or failed to respond.")
+        return
+    
+    try:
+        response = json.loads(response_bytes.decode("utf-8").strip())
+    except json.JSONDecodeError:
+        print("[-] Failed to parse server response.")
+        return
+    
+    if response.get("status") == "ERROR":
+        print(f"[-] Server Error: {response.get('msg')}")
+        return 
+    
+    files = response.get("files",{})
+    
+    if not files:
+        print("[*] No files currently hosted on server.")
+    
+    print(f"\n{'FILENAME':<20} | {'OWNER':<10} | {'SIZE (bytes)':<15} | {'DOWNLOADS':<10}")
+    print("-"*85)
+    
+    for filename, details in files.items():
+        owner = details.get("owner","unknown")
+        size = details.get("size", 0)
+        downloads = details.get("downloads", 0)
+        uploaded = details.get("uploaded", "unknown")
+        
+        print(f"{filename:<20} | {owner:<10} | {size:<15} | {downloads:<10} | {uploaded}")
+    print("-"*85)
+
+
 def main():
     print(f"[*] Connecting to server at {HOST}:{PORT}...")
     try:
         sock = create_secure_connection()
         print("[*] Connected securely.")
+        
+        reader = ProtocolReader(sock)
     except Exception as e:
         print(f"[-] Connection failed: {e}")
         return 
     
-    if not perform_login(sock):
+    if not perform_login(sock,reader):
         sock.close()
         return 
     
@@ -134,7 +252,7 @@ def main():
             elif choice in commands:
                 cmd_name, func = commands[choice]
                 print(f"[*] Executing {cmd_name}...")
-                func(sock)
+                func(sock,reader)
             else:
                 print("[-] Invalid option. Please choose a valid number.")
     finally:

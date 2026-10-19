@@ -7,7 +7,8 @@ import struct
 import threading
 import argparse
 import metadata
-
+from utils import ProtocolReader
+import auth
 HOST = "0.0.0.0"
 
 BUFFER_SIZE = 4096
@@ -23,42 +24,11 @@ def parse_args():
     parser.add_argument(
         "--storage", 
         type=str, 
-        default="storage/", 
+        default="database/", 
         help="Directory path for file storage (default: storage/)"
     )
     return parser.parse_args()
 
-class ProtocolReader:
-    def __init__(self, sock):
-        self.sock = sock
-        self.buffer = bytearray()
-
-    def recv_line(self, max_bytes=4096):
-        """Reads up to a newline, keeping leftover bytes in the buffer."""
-        while b'\n' not in self.buffer:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("Connection closed unexpectedly.")
-            self.buffer.extend(chunk)
-            if len(self.buffer) > max_bytes:
-                raise ValueError("Line exceeded maximum length.")
-
-        idx = self.buffer.index(b'\n') + 1
-        line = bytes(self.buffer[:idx])
-        del self.buffer[:idx]  # Safely remove the line, leaving the rest!
-        return line
-
-    def recv_exact(self, n):
-        """Reads exactly n bytes, pulling from the leftover buffer first."""
-        while len(self.buffer) < n:
-            chunk = self.sock.recv(max(4096, n - len(self.buffer)))
-            if not chunk:
-                raise ConnectionError("Connection closed before exact bytes arrived.")
-            self.buffer.extend(chunk)
-
-        data = bytes(self.buffer[:n])
-        del self.buffer[:n]  # Remove the consumed body bytes
-        return data
 
 def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
 
@@ -128,7 +98,41 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
         if os.path.exists(save_filename):
             os.remove(save_filename)
         raise e
- 
+        
+def handle_download(conn, client_id, header_data, login_user):
+    """Handles the server-side logic for verifying and sending a requested file."""
+    filename = header_data.get("name")
+    file_meta = metadata.get(filename)
+    file_path = os.path.join(STORAGE_DIR, filename)
+
+    # EDGE CASE CHECK: Is it missing from JSON?
+    if not file_meta:
+        conn.sendall(b'{"status": "ERROR", "msg": "file not found in database"}\n')
+        return
+
+    # EDGE CASE CHECK: Is it in JSON, but physically missing from the disk?
+    if not os.path.exists(file_path):
+        print(f"[-] WARNING: Database mismatch! '{filename}' is missing from disk.")
+        conn.sendall(b'{"status": "ERROR", "msg": "file is corrupted or missing on server"}\n')
+        return
+
+    # 1. Send the header so the client knows what to expect
+    response = {
+        "status": "OK",
+        "size": file_meta["size"],
+        "sha256": file_meta["sha256"]
+    }
+    conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+
+    # 2. Stream the physical file bytes to the client
+    print(f"[*] [{client_id}] Sending '{filename}' to client...")
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):
+            conn.sendall(chunk)
+
+    # 3. Update the download counter safely
+    metadata.count_download(filename)
+    print(f"[+] [{client_id}] Finished sending '{filename}'.")
 
 def handle_client(conn, addr, STORAGE_DIR):
     client_id = f"{addr[0]}:{addr[1]}"
@@ -153,10 +157,27 @@ def handle_client(conn, addr, STORAGE_DIR):
             
             # Command routing
             if cmd == "LOGIN":
-                username = header_data.get("username") # or "user" based on your JSON format
-                print(f"[*] [{client_id}] Login received for user: {username}")
-                login_user = username  # Persists for this connection
-                conn.sendall(b'{"status": "OK"}\n')
+                username = header_data.get("username")
+                password = header_data.get("password")
+                
+                if auth.authenticate(username, password):
+                    login_user = username
+                    print(f"[+] [{client_id}] User '{username}' authenticated successfully.")
+                    conn.sendall(b'{"status": "OK", "msg": "Login successful"}\n')
+                else:
+                    print(f"[-] [{client_id}] Failed login attempt for '{username}'.")
+                    conn.sendall(b'{"status": "ERROR", "msg": "Invalid username or password"}\n')
+                    
+            elif cmd == "REGISTER":
+                username = header_data.get("username")
+                password = header_data.get("password")
+                
+                success, msg = auth.register(username, password)
+                if success:
+                    print(f"[+] [{client_id}] New user registered: '{username}'")
+                    conn.sendall((json.dumps({"status": "OK", "msg": msg}) + "\n").encode('utf-8'))
+                else:
+                    conn.sendall((json.dumps({"status": "ERROR", "msg": msg}) + "\n").encode('utf-8'))
 
             elif cmd == "UPLOAD":
                 if not login_user:
@@ -168,14 +189,24 @@ def handle_client(conn, addr, STORAGE_DIR):
                 if not login_user:
                     conn.sendall(b'{"status": "ERROR", "msg": "not logged in"}\n')
                     continue
-                # Implement LIST logic here
-                conn.sendall(b'{"status": "ERROR", "msg": "LIST not implemented yet"}\n')
+                
+                # 1. Safely grab the dictionary from memory
+                files_dict = metadata.list_all()
+                
+                # 2. Format the response exactly as expected by the client
+                response = {
+                    "status": "OK",
+                    "files": files_dict
+                }
+                
+                # 3. Convert to a JSON string, add the newline, and send
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
 
             elif cmd == "DOWNLOAD":
                 if not login_user:
                     conn.sendall(b'{"status": "ERROR", "msg": "not logged in"}\n')
                     continue
-                conn.sendall(b'{"status": "ERROR", "msg": "DOWNLOAD not implemented yet"}\n')
+                handle_download(conn, client_id, header_data, login_user)
 
             elif cmd == "QUIT":
                 print(f"[*] [{client_id}] Client requested quit.")
@@ -196,6 +227,7 @@ def handle_client(conn, addr, STORAGE_DIR):
 
 def start_server(PORT,STORAGE_DIR):
     metadata.load()
+    auth.load()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 

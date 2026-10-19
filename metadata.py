@@ -28,8 +28,24 @@ def list_all():
         return _metadata_cache.copy()
 
 def get(name):
+    """Returns a safe copy of a specific file's metadata."""
     with metadata_lock:
-        return _metadata_cache.get(name)
+        return _metadata_cache.get(name, {}).copy() if name in _metadata_cache else None
+
+def count_download(name):
+    """Safely increments the download counter for a file."""
+    global _metadata_cache
+    with metadata_lock:
+        if name in _metadata_cache:
+            _metadata_cache[name]["downloads"] = _metadata_cache[name].get("downloads", 0) + 1
+            
+            # Safely save to JSON
+            temp_meta = METADATA_FILE + ".tmp"
+            with open(temp_meta, "w") as f:
+                json.dump(_metadata_cache, f, indent=4)
+            os.replace(temp_meta, METADATA_FILE)
+            return True
+        return False        
 
 def add_or_update(temp_filepath, final_filepath, owner, size, sha256_hex):
     """Handles the owner check, physical file swap, and metadata update under one lock."""
