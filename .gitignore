@@ -1,4 +1,6 @@
-server.crt
-server.key
+server/server.crt
+server/server.key
 database/*
-client_downloads/*
+!client/client_downloads/.gitkeep
+server/users.json
+server/metadata.json

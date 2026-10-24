@@ -9,11 +9,15 @@ import argparse
 import metadata
 from utils import ProtocolReader
 import auth
+from pathlib import Path
 HOST = "0.0.0.0"
 
 BUFFER_SIZE = 4096
 
 def parse_args():
+    server_dir = Path(__file__).resolve().parent
+    CFSv1_root = server_dir.parent
+
     parser = argparse.ArgumentParser(description="Modular TLS File Transfer Server")
     parser.add_argument(
         "--port", 
@@ -24,10 +28,18 @@ def parse_args():
     parser.add_argument(
         "--storage", 
         type=str, 
-        default="database/", 
+        default="database", 
         help="Directory path for file storage (default: storage/)"
     )
-    return parser.parse_args()
+    
+    args = parser.parse_args()
+    
+    folder_name = Path(args.storage).name
+    
+    
+    args.storage = str(CFSv1_root / folder_name)
+    
+    return args
 
 
 def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
@@ -239,11 +251,10 @@ def start_server(PORT,STORAGE_DIR):
     server.bind((HOST, PORT))
     server.listen(20)
     print(f"[*] TLS File Server listening on {HOST}:{PORT}")
-
+    print(f"[*] Storage directory set to: {STORAGE_DIR}")
     while True:
         raw_conn, addr = server.accept()
         print(f"\n[*] Client connected from {addr[0]}:{addr[1]}")
-        print(f"[*] Storage directory set to: {STORAGE_DIR}")
         
         try:
             tls_conn = server_context.wrap_socket(raw_conn, server_side=True)

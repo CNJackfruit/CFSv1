@@ -35,18 +35,24 @@ def get(name):
 def count_download(name):
     """Safely increments the download counter for a file."""
     global _metadata_cache
+    
     with metadata_lock:
-        if name in _metadata_cache:
-            _metadata_cache[name]["downloads"] = _metadata_cache[name].get("downloads", 0) + 1
-            
-            # Safely save to JSON
-            temp_meta = METADATA_FILE + ".tmp"
-            with open(temp_meta, "w") as f:
-                json.dump(_metadata_cache, f, indent=4)
-            os.replace(temp_meta, METADATA_FILE)
-            return True
-        return False        
+        if name not in _metadata_cache:
+            return False
+        _metadata_cache[name]["downloads"] = _metadata_cache[name].get("downloads", 0) + 1
+        # Snapshot current cache state for thread-safe writing outside the lock
+        snapshot = copy.deepcopy(_metadata_cache)
 
+    # File I/O outside lock
+    temp_meta = f"{METADATA_FILE}.tmp"
+    with open(temp_meta, "w") as f:
+        json.dump(snapshot, f, indent=4)
+        f.flush()
+        os.fsync(f.fileno())  # Ensures data is physically written to storage disk
+        
+    os.replace(temp_meta, METADATA_FILE)
+    return True
+    
 def add_or_update(temp_filepath, final_filepath, owner, size, sha256_hex):
     """Handles the owner check, physical file swap, and metadata update under one lock."""
     name=os.path.basename(final_filepath)
