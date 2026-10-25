@@ -2,6 +2,7 @@ import json
 import os
 import threading
 from datetime import datetime
+import copy
 
 METADATA_FILE = "metadata.json"
 metadata_lock = threading.Lock()

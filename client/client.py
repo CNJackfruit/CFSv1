@@ -109,9 +109,13 @@ def handle_download(sock, reader):
     sha256_acc = hashlib.sha256()
     
     with open(save_path, "wb") as f:
-        file_data = reader.recv_exact(file_size)
-        f.write(file_data)
-        sha256_acc.update(file_data)
+        remaining = file_size
+        while remaining > 0:
+            chunk_size = min(65536, remaining)
+            chunk_data = reader.recv_exact(chunk_size)
+            f.write(chunk_data)
+            sha256_acc.update(chunk_data)
+            remaining -= chunk_size
         
     calculated_sha256 = sha256_acc.hexdigest()
     

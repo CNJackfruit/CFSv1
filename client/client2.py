@@ -155,11 +155,15 @@ def download(sock, name, dest_folder, reader=None):
     expected_sha256 = response.get("sha256")
 
     # Stream exact bytes into temp file
+    remaining = file_size
+    
     sha256_acc = hashlib.sha256()
     with open(temp_path, "wb") as f:
-        file_data = reader.recv_exact(file_size)
-        f.write(file_data)
-        sha256_acc.update(file_data)
+        chunk_size = min(65536, remaining)
+        chunk_data = reader.recv_exact(chunk_size)
+        f.write(chunk_data)
+        sha256_acc.update(chunk_data)
+        remaining -= chunk_size
 
     # 2. END TIMING WINDOW
     elapsed_time = time.perf_counter() - start_time

@@ -41,12 +41,18 @@ def parse_args():
     
     return args
 
+class FileSizeError(Exception):
+    """Raised when an upload exceeds the maximum allowed file size."""
+    pass
 
 def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
 
     """Handles the file upload logic."""
     filename = header_data.get("name")
     file_size = header_data.get("size")
+    max_size_bytes = 209715200
+    if(file_size>=max_size_bytes):
+        raise FileSizeError(f"Rejected: {client_file_size} bytes exceeds the 200 MB limit.")
     expected_sha256 = header_data.get("sha256")
 
     print(f"[*] [{client_id}] Upload request for: '{filename}' ({file_size} bytes)")
@@ -92,24 +98,37 @@ def handle_upload(reader, conn, client_id, header_data,STORAGE_DIR,owner=None):
             
             if success:
                 print(f"[+] [{client_id}] Success! Saved to '{save_filename}'. SHA256 verified")
-                conn.sendall(msg.encode('utf-8') + b"\n")
+                response = {"status": "SUCCESS", "msg": msg}
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
             else:
                 print(f"[-] [{client_id}] Denied: {msg}")
-                conn.sendall(msg.encode('utf-8') + b"\n")
+                response = {"status": "ERROR", "msg": msg}
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                 if os.path.exists(temp_save_filename):
                     os.remove(temp_save_filename)
             
         else:
             print(f"[-] [{client_id}] Hash mismatch or incomplete transfer!")
-            conn.sendall(b"ERROR: Hash or size mismatch.\n")
+            error_msg = {"status": "ERROR", "msg": "Hash or size mismatch."}
+            conn.sendall((json.dumps(error_msg) + "\n").encode("utf-8"))
             if os.path.exists(temp_save_filename):
                 os.remove(temp_save_filename)
+                
+    except FileSizeError as e:
+        print(f"[-] [{client_id}] {e}")
+        error_msg = {"status": "ERROR", "msg": str(e)}
+        conn.sendall((json.dumps(error_msg) + "\n").encode("utf-8"))
+        return
         
     except Exception as e:
         print(f"[-] [{client_id}] Upload error: {e}")
-        if os.path.exists(save_filename):
-            os.remove(save_filename)
-        raise e
+        if os.path.exists(temp_save_filename):
+            os.remove(temp_save_filename)
+        
+        # Send JSON error back to client instead of crashing thread
+        error_msg = {"status": "ERROR", "msg": f"Server fault: {str(e)}"}
+        conn.sendall((json.dumps(error_msg) + "\n").encode("utf-8"))
+        return
         
 def handle_download(conn, client_id, header_data, login_user):
     """Handles the server-side logic for verifying and sending a requested file."""

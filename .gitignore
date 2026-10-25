@@ -4,3 +4,4 @@ database/*
 !client/client_downloads/.gitkeep
 server/users.json
 server/metadata.json
+sdn/*
