@@ -1,0 +1,9 @@
+{
+  "server_ip": "10.0.0.1",
+  "server_port": 9000,
+  "default_action": "deny",
+  "rules": [
+    {"id": 1, "action": "deny", "src_ip": "10.0.0.4"},
+    {"id": 2, "action": "allow", "src_ip": "*"}
+  ]
+}

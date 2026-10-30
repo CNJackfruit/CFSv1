@@ -7,7 +7,7 @@ import threading
 from utils import ProtocolReader
 
 HOST = "0.0.0.0"
-PORT = 8080
+PORT = 9000
 BUFFER_SIZE = 4096
 HEADER_SIZE = 1024
 

@@ -264,7 +264,7 @@ def start_server(PORT,STORAGE_DIR):
 
     # Setup SSL Context
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server_context.load_cert_chain(certfile="server/server.crt", keyfile="server/server.key")
+    server_context.load_cert_chain(certfile="server.crt", keyfile="server.key")
 
     # Bind and listen
     server.bind((HOST, PORT))
