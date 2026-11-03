@@ -1,7 +1,28 @@
-server/server.crt
-server/server.key
+# Security & TLS Keys
+*.key
+*.crt
+
+# Runtime Database & Metadata
+metadata.json
+server/metadata.json
 database/*
 !client/client_downloads/.gitkeep
-server/users.json
-server/metadata.json
 
+# Python Bytecode & Environments
+__pycache__/
+*.pyc
+ryu-env/
+venv/
+.venv/
+
+# Logs & Performance Artifacts
+transfers.csv
+bandwidth.csv
+results/
+*.log
+
+# Test Artifacts
+*.bin
+testfile.bin
+*.tmp
+*.part.*
