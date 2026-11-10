@@ -1,0 +1,203 @@
+[*] Loaded metadata.json.
+[*] TLS File Server listening on 0.0.0.0:9000
+[*] Storage directory set to: /home/puxfij/CFSv1/storage
+
+[*] Client connected from 10.0.0.3:46898
+[*] Active client threads: 1
+
+[*] Client connected from 10.0.0.2:42386
+[*] Active client threads: 2
+
+[*] Client connected from 10.0.0.5:41786
+[+] Thread started for client 10.0.0.3:46898
+[*] [10.0.0.3:46898] Received command: LOGIN
+[+] [10.0.0.3:46898] User 'user1' authenticated successfully.
+[*] Active client threads: 3
+[+] Thread started for client 10.0.0.5:41786
+[*] [10.0.0.5:41786] Received command: LOGIN
+[+] [10.0.0.5:41786] User 'user1' authenticated successfully.
+[+] Thread started for client 10.0.0.2:42386
+[*] [10.0.0.2:42386] Received command: LOGIN
+[+] [10.0.0.2:42386] User 'user1' authenticated successfully.
+[*] [10.0.0.3:46898] Received command: LIST
+
+[*] Client connected from 10.0.0.6:52902
+[*] Active client threads: 4
+[*] [10.0.0.3:46898] Received command: QUIT
+[*] [10.0.0.3:46898] Client requested quit.
+[-] Connection with 10.0.0.3:46898 closed.
+[*] [10.0.0.5:41786] Received command: LIST
+
+[*] Client connected from 10.0.0.3:46908
+[*] [10.0.0.2:42386] Received command: LIST
+[*] [10.0.0.5:41786] Received command: QUIT
+[*] [10.0.0.5:41786] Client requested quit.
+[-] Connection with 10.0.0.5:41786 closed.
+[+] Thread started for client 10.0.0.6:52902
+[*] Active client threads: 3
+
+[*] Client connected from 10.0.0.3:46912
+[*] [10.0.0.6:52902] Received command: LOGIN
+[+] [10.0.0.6:52902] User 'user1' authenticated successfully.
+[*] Active client threads: 4
+
+[*] Client connected from 10.0.0.5:41794
+[*] Active client threads: 5
+
+[*] Client connected from 10.0.0.3:46928
+[*] Active client threads: 6
+
+[*] Client connected from 10.0.0.5:41806
+[*] Active client threads: 7
+
+[*] Client connected from 10.0.0.5:41818
+[*] [10.0.0.2:42386] Received command: QUIT
+[*] [10.0.0.2:42386] Client requested quit.
+[-] Connection with 10.0.0.2:42386 closed.
+[+] Thread started for client 10.0.0.5:41794
+[*] Active client threads: 7
+
+[*] Client connected from 10.0.0.2:42394
+[*] Active client threads: 8
+
+[*] Client connected from 10.0.0.2:42402
+[*] [10.0.0.5:41794] Received command: LOGIN
+[+] [10.0.0.5:41794] User 'user1' authenticated successfully.
+[*] Active client threads: 9
+
+[*] Client connected from 10.0.0.3:46944
+[+] Thread started for client 10.0.0.5:41806
+[+] Thread started for client 10.0.0.3:46928
+[+] Thread started for client 10.0.0.3:46912
+[*] Active client threads: 10
+
+[*] Client connected from 10.0.0.2:42416
+[*] [10.0.0.5:41806] Received command: LOGIN
+[+] [10.0.0.5:41806] User 'user2' authenticated successfully.
+[*] Active client threads: 11
+
+[*] Client connected from 10.0.0.3:46960
+[*] [10.0.0.3:46928] Received command: LOGIN
+[+] [10.0.0.3:46928] User 'user3' authenticated successfully.
+[*] [10.0.0.3:46912] Received command: LOGIN
+[+] [10.0.0.3:46912] User 'user2' authenticated successfully.
+[+] Thread started for client 10.0.0.5:41818
+[+] Thread started for client 10.0.0.2:42402
+[+] Thread started for client 10.0.0.3:46944
+[+] Thread started for client 10.0.0.3:46908
+[+] Thread started for client 10.0.0.2:42394
+[*] Active client threads: 12
+
+[*] Client connected from 10.0.0.5:41832
+[*] Active client threads: 13
+
+[*] Client connected from 10.0.0.5:41848
+[*] [10.0.0.5:41818] Received command: LOGIN
+[+] [10.0.0.5:41818] User 'user3' authenticated successfully.
+[+] Thread started for client 10.0.0.2:42416
+[*] [10.0.0.3:46944] Received command: LOGIN
+[+] [10.0.0.3:46944] User 'user4' authenticated successfully.
+[*] Active client threads: 14
+
+[*] Client connected from 10.0.0.2:42428
+[*] [10.0.0.2:42394] Received command: LOGIN
+[+] [10.0.0.2:42394] User 'user1' authenticated successfully.
+[*] [10.0.0.2:42402] Received command: LOGIN
+[+] [10.0.0.2:42402] User 'user2' authenticated successfully.
+[*] Active client threads: 15
+
+[*] Client connected from 10.0.0.2:42432
+[*] [10.0.0.3:46908] Received command: LOGIN
+[+] [10.0.0.3:46908] User 'user1' authenticated successfully.
+[+] Thread started for client 10.0.0.3:46960
+[*] [10.0.0.2:42416] Received command: LOGIN
+[+] [10.0.0.2:42416] User 'user3' authenticated successfully.
+[*] Active client threads: 16
+[+] Thread started for client 10.0.0.5:41832
+[+] Thread started for client 10.0.0.5:41848
+[*] [10.0.0.3:46960] Received command: LOGIN
+[+] [10.0.0.3:46960] User 'user5' authenticated successfully.
+[+] Thread started for client 10.0.0.2:42428
+[+] Thread started for client 10.0.0.2:42432
+[*] [10.0.0.5:41832] Received command: LOGIN
+[+] [10.0.0.5:41832] User 'user4' authenticated successfully.
+[*] [10.0.0.5:41848] Received command: LOGIN
+[+] [10.0.0.5:41848] User 'user5' authenticated successfully.
+[*] [10.0.0.2:42428] Received command: LOGIN
+[+] [10.0.0.2:42428] User 'user4' authenticated successfully.
+[*] [10.0.0.2:42432] Received command: LOGIN
+[+] [10.0.0.2:42432] User 'user5' authenticated successfully.
+[*] [10.0.0.6:52902] Received command: LIST
+[*] [10.0.0.6:52902] Received command: QUIT
+[*] [10.0.0.6:52902] Client requested quit.
+[-] Connection with 10.0.0.6:52902 closed.
+
+[*] Client connected from 10.0.0.6:52908
+[*] Active client threads: 16
+
+[*] Client connected from 10.0.0.6:52910
+[*] Active client threads: 17
+
+[*] Client connected from 10.0.0.6:52926
+[*] Active client threads: 18
+
+[*] Client connected from 10.0.0.6:52938
+[*] Active client threads: 19
+
+[*] Client connected from 10.0.0.6:52948
+[*] Active client threads: 20
+[+] Thread started for client 10.0.0.6:52948
+[+] Thread started for client 10.0.0.6:52910
+[+] Thread started for client 10.0.0.6:52908
+[*] [10.0.0.6:52948] Received command: LOGIN
+[+] [10.0.0.6:52948] User 'user1' authenticated successfully.
+[*] [10.0.0.6:52910] Received command: LOGIN
+[+] [10.0.0.6:52910] User 'user3' authenticated successfully.
+[+] Thread started for client 10.0.0.6:52926
+[*] [10.0.0.6:52908] Received command: LOGIN
+[+] [10.0.0.6:52908] User 'user2' authenticated successfully.
+[+] Thread started for client 10.0.0.6:52938
+[*] [10.0.0.6:52926] Received command: LOGIN
+[+] [10.0.0.6:52926] User 'user4' authenticated successfully.
+[*] [10.0.0.6:52938] Received command: LOGIN
+[+] [10.0.0.6:52938] User 'user5' authenticated successfully.
+[*] [10.0.0.3:46944] Received command: DOWNLOAD
+[*] [10.0.0.3:46944] Sending '5MB.bin' to client...
+[*] [10.0.0.5:41818] Received command: DOWNLOAD
+[*] [10.0.0.5:41818] Sending '5MB.bin' to client...
+[*] [10.0.0.5:41794] Received command: DOWNLOAD
+[*] [10.0.0.5:41794] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42402] Received command: DOWNLOAD
+[*] [10.0.0.2:42428] Received command: DOWNLOAD
+[*] [10.0.0.3:46912] Received command: DOWNLOAD
+[*] [10.0.0.3:46912] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42394] Received command: DOWNLOAD
+[*] [10.0.0.2:42394] Sending '5MB.bin' to client...
+[*] [10.0.0.3:46960] Received command: DOWNLOAD
+[*] [10.0.0.5:41832] Received command: DOWNLOAD
+[*] [10.0.0.5:41832] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42416] Received command: DOWNLOAD
+[*] [10.0.0.2:42416] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42428] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42432] Received command: DOWNLOAD
+[*] [10.0.0.2:42432] Sending '5MB.bin' to client...
+[*] [10.0.0.5:41848] Received command: DOWNLOAD
+[*] [10.0.0.5:41848] Sending '5MB.bin' to client...
+[*] [10.0.0.3:46908] Received command: DOWNLOAD
+[*] [10.0.0.3:46908] Sending '5MB.bin' to client...
+[*] [10.0.0.3:46960] Sending '5MB.bin' to client...
+[*] [10.0.0.3:46928] Received command: DOWNLOAD
+[*] [10.0.0.5:41806] Received command: DOWNLOAD
+[*] [10.0.0.5:41806] Sending '5MB.bin' to client...
+[*] [10.0.0.2:42402] Sending '5MB.bin' to client...
+[*] [10.0.0.3:46928] Sending '5MB.bin' to client...
+[*] [10.0.0.6:52938] Received command: DOWNLOAD
+[*] [10.0.0.6:52938] Sending '5MB.bin' to client...
+[*] [10.0.0.6:52926] Received command: DOWNLOAD
+[*] [10.0.0.6:52926] Sending '5MB.bin' to client...
+[*] [10.0.0.6:52948] Received command: DOWNLOAD
+[*] [10.0.0.6:52948] Sending '5MB.bin' to client...
+[*] [10.0.0.6:52908] Received command: DOWNLOAD
+[*] [10.0.0.6:52908] Sending '5MB.bin' to client...
+[*] [10.0.0.6:52910] Received command: DOWNLOAD
+[*] [10.0.0.6:52910] Sending '5MB.bin' to client...
