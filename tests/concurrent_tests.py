@@ -90,8 +90,8 @@ def login_as(args, user_n):
     sock.settimeout(120.0)
     try:
         reader = cl.ProtocolReader(sock)
-        # Hardcode both username and password to "vamshi"
-        cl.login(sock, "vamshi", "vamshi", reader)
+        
+        cl.login(sock, f"user{user_n}", args.password_fmt.format(n=user_n), reader)
     except Exception:
         sock.close()
         raise
@@ -201,8 +201,8 @@ def main():
     p.add_argument("file", help="local file to upload / to use as download source")
     p.add_argument("tag", help="experiment name, e.g. E2_N10 or E1_up_10MB")
     p.add_argument("--port", type=int, default=9000)
-    p.add_argument("--password-fmt", default="user{n}123",
-                   help="password of user<n> (default: user{n}123)")
+    p.add_argument("--password-fmt", default="user{n}",
+                   help="password of user<n> (default: user{n})")
     p.add_argument("--csv", default=os.path.join(HERE, "..", "results", "transfers.csv"),
                    help="CSV to append to (default: results/transfers.csv)")
     p.add_argument("--name", help="value for the host column (default: h<N> from the IP)")

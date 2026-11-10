@@ -16,9 +16,10 @@ venv/
 .venv/
 
 # Logs & Performance Artifacts
-transfers.csv
-bandwidth.csv
-results/
+downloads_check/
+client_downloads/
+results/server.log
+results/*.out
 *.log
 
 # Test Artifacts
