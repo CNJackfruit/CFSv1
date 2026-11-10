@@ -26,3 +26,4 @@ results/
 testfile.bin
 *.tmp
 *.part.*
+__pycache__/
