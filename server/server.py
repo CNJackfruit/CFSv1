@@ -240,6 +240,16 @@ def handle_client(conn, addr, STORAGE_DIR):
         print(f"[-] Connection with {client_id} closed.")
 
 ### THE SERVER DOESNT REPSOND WITHOUT LOGIN COMMAND FIRST THE login_user variable is set to None and we can verify this by using netcat and sending the commands directly without login
+def serve_connection(raw_conn, addr, ssl_context, STORAGE_DIR):
+    """Runs in its own thread so a slow TLS handshake never blocks accept()."""
+    raw_conn.settimeout(10.0)   # don't wait forever for a handshake
+    try:
+        tls_conn = ssl_context.wrap_socket(raw_conn, server_side=True)
+    except (ssl.SSLError, OSError) as e:
+        print(f"[-] TLS Handshake failed with {addr[0]}:{addr[1]}: {e}")
+        raw_conn.close()
+        return
+    handle_client(tls_conn, addr, STORAGE_DIR)
 
 def start_server(PORT,STORAGE_DIR):
     metadata.load()
@@ -253,27 +263,18 @@ def start_server(PORT,STORAGE_DIR):
 
     # Bind and listen
     server.bind((HOST, PORT))
-    server.listen(20)
+    server.listen(128)
     print(f"[*] TLS File Server listening on {HOST}:{PORT}")
     print(f"[*] Storage directory set to: {STORAGE_DIR}")
     while True:
         raw_conn, addr = server.accept()
         print(f"\n[*] Client connected from {addr[0]}:{addr[1]}")
-        
-        try:
-            tls_conn = server_context.wrap_socket(raw_conn, server_side=True)
-
-            client_thread = threading.Thread(
-                target=handle_client, args=(tls_conn, addr,STORAGE_DIR), daemon=True
-            )
-            client_thread.start()
-
-            active_count = threading.active_count() - 1
-            print(f"[*] Active client threads: {active_count}")
-
-        except ssl.SSLError as e:
-            print(f"[-] TLS Handshake failed with {addr[0]}:{addr[1]}: {e}")
-            raw_conn.close()
+        threading.Thread(
+            target=serve_connection,
+            args=(raw_conn, addr, server_context, STORAGE_DIR),
+            daemon=True
+        ).start()
+        print(f"[*] Active client threads: {threading.active_count() - 1}")
 
 if __name__ == "__main__":
     args = parse_args()
