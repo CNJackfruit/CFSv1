@@ -17,6 +17,7 @@ import ipaddress
 import json
 import os
 import time
+import math
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -141,6 +142,7 @@ class FileShareController(app_manager.RyuApp):
         super(FileShareController, self).__init__(*args, **kwargs)
         self.datapaths = {}          # dpid -> datapath
         self.prev = {}               # (dpid, port) -> (time, rx_bytes, tx_bytes)
+        self.blocks = {}
         # read events from the END of the file, so old events from earlier runs are ignored
         try:
             self.event_offset = os.path.getsize(EVENTS_PATH)
@@ -223,6 +225,14 @@ class FileShareController(app_manager.RyuApp):
             self.logger.info("Rule %s %s prio=%d %s", rid, act.upper(), prio,
                              match.get("ipv4_src", "*") if "tcp_dst" in match
                              else "(reply) -> " + match.get("ipv4_dst", "*"))
+        # 4. blocks still in force survive a policy reload (and a switch reconnect)
+        now = time.time()
+        for ip, expiry in list(self.blocks.items()):
+            if expiry > now:
+                self._install_block(dp, ip, max(1, math.ceil(expiry - now)))
+    def _install_block(self, dp, ip, seconds):
+        for prio, match, _act, _rid in build_block_flows(self.policy, ip):
+            self._add_flow(dp, prio, match, False, hard_timeout=seconds)
     def block(self, ip):
         """Install timed drop flows for one client IP on every connected switch."""
         try:
@@ -233,9 +243,9 @@ class FileShareController(app_manager.RyuApp):
         if addr.version != 4 or addr.is_loopback or str(addr) == self.policy["server_ip"]:
             self.logger.warning("Ignoring block request for %s", ip)
             return
+        self.blocks[str(addr)] = time.time() + BLOCK_SECONDS
         for dp in list(self.datapaths.values()):
-            for prio, match, _act, _rid in build_block_flows(self.policy, str(addr)):
-                self._add_flow(dp, prio, match, False, hard_timeout=BLOCK_SECONDS)
+            self._install_block(dp, str(addr), BLOCK_SECONDS)
         self.logger.info("AUTO-BLOCK %s for %d s", addr, BLOCK_SECONDS)
     # -- live reload --------------------------------------------------------
     def _policy_loop(self):
@@ -260,6 +270,11 @@ class FileShareController(app_manager.RyuApp):
     def _server_event_loop(self):
         while True:
             hub.sleep(EVENT_INTERVAL)
+            now = time.time()
+            for ip, expiry in list(self.blocks.items()):
+                if expiry <= now:          # the switch already deleted the flows itself
+                    del self.blocks[ip]
+                    self.logger.info("AUTO-BLOCK expired for %s: access restored", ip)
             try:
                 size = os.path.getsize(EVENTS_PATH)
             except OSError:
