@@ -13,6 +13,22 @@ from pathlib import Path
 HOST = "0.0.0.0"
 
 BUFFER_SIZE = 4096
+FAIL_LIMIT = 3                 # failed logins per client IP before we react (used from 4b on)
+failed_logins = {}             # ip -> number of failed logins in a row
+failed_lock = threading.Lock() # many client threads update this dict
+
+
+def record_failed_login(ip):
+    """Count one failed login for this IP and return the new count."""
+    with failed_lock:
+        failed_logins[ip] = failed_logins.get(ip, 0) + 1
+        return failed_logins[ip]
+
+
+def reset_failed_logins(ip):
+    """A successful login clears the counter for this IP."""
+    with failed_lock:
+        failed_logins.pop(ip, None)
 
 def parse_args():
     server_dir = Path(__file__).resolve().parent
@@ -153,6 +169,7 @@ def handle_download(conn, client_id, header_data, STORAGE_DIR, login_user):
     print(f"[+] [{client_id}] Finished sending '{filename}'.")
 def handle_client(conn, addr, STORAGE_DIR):
     client_id = f"{addr[0]}:{addr[1]}"
+    client_ip = addr[0]
     print(f"[+] Thread started for client {client_id}")
 
     conn.settimeout(60.0)
@@ -179,10 +196,19 @@ def handle_client(conn, addr, STORAGE_DIR):
                 
                 if auth.authenticate(username, password):
                     login_user = username
+                    reset_failed_logins(client_ip)
                     print(f"[+] [{client_id}] User '{username}' authenticated successfully.")
                     conn.sendall(b'{"status": "OK", "msg": "Login successful"}\n')
                 else:
-                    print(f"[-] [{client_id}] Failed login attempt for '{username}'.")
+                    count = record_failed_login(client_ip)
+                    print(f"[-] [{client_id}] Failed login attempt for '{username}' "
+                          f"({count}/{FAIL_LIMIT} from {client_ip}).")
+                    if count >= FAIL_LIMIT:
+                        reset_failed_logins(client_ip)   # start counting again after this
+                        print(f"[!] [{client_id}] Too many failed logins from {client_ip}; "
+                              f"closing connection.")
+                        conn.sendall(b'{"status": "ERROR", "msg": "Too many failed login attempts"}\n')
+                        break                            # leaves the while loop; finally closes conn
                     conn.sendall(b'{"status": "ERROR", "msg": "Invalid username or password"}\n')
                     
             elif cmd == "REGISTER":
