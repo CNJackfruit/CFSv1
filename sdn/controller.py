@@ -29,6 +29,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 POLICY_PATH = os.environ.get("POLICY_FILE", os.path.join(HERE, "policy.json"))
 BW_CSV_PATH = os.environ.get("BW_CSV", os.path.join(HERE, "bandwidth.csv"))
+EVENTS_PATH = os.environ.get("EVENTS_FILE", os.path.join(HERE, "events.jsonl"))
+EVENT_INTERVAL = 0.5    # seconds: how often events.jsonl is checked
 
 CHECK_INTERVAL = 2      # seconds: policy file check and port-stats request
 BASELINE_PRIORITY = 1
@@ -128,6 +130,11 @@ class FileShareController(app_manager.RyuApp):
         super(FileShareController, self).__init__(*args, **kwargs)
         self.datapaths = {}          # dpid -> datapath
         self.prev = {}               # (dpid, port) -> (time, rx_bytes, tx_bytes)
+        # read events from the END of the file, so old events from earlier runs are ignored
+        try:
+            self.event_offset = os.path.getsize(EVENTS_PATH)
+        except OSError:
+            self.event_offset = 0
 
         # policy
         try:
@@ -148,7 +155,7 @@ class FileShareController(app_manager.RyuApp):
 
         self.reload_thread = hub.spawn(self._policy_loop)
         self.monitor_thread = hub.spawn(self._monitor_loop)
-
+        self.server_event_thread = hub.spawn(self._server_event_loop)
     # -- helpers ------------------------------------------------------------
     @staticmethod
     def _mtime():
@@ -223,6 +230,35 @@ class FileShareController(app_manager.RyuApp):
             self.logger.info("Policy reloaded at %s", time.strftime("%H:%M:%S"))
             for dp in list(self.datapaths.values()):
                 self.install(dp)
+                
+    # -- events from the file server (4d: only log them) ---------------------
+    def _server_event_loop(self):
+        while True:
+            hub.sleep(EVENT_INTERVAL)
+            try:
+                size = os.path.getsize(EVENTS_PATH)
+            except OSError:
+                continue                      # file does not exist yet
+            if size < self.event_offset:      # file was deleted and recreated
+                self.event_offset = 0
+            if size == self.event_offset:
+                continue                      # nothing new
+            try:
+                with open(EVENTS_PATH, "rb") as f:
+                    f.seek(self.event_offset)
+                    data = f.read()
+            except OSError:
+                continue
+            end = data.rfind(b"\n") + 1       # only whole lines; a half-written line waits
+            self.event_offset += end
+            for raw in data[:end].decode("utf-8", "replace").splitlines():
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    self.logger.warning("Ignoring malformed event line: %r", raw)
+                    continue
+                self.logger.info("EVENT from server: %s ip=%s count=%s",
+                                 ev.get("event"), ev.get("ip"), ev.get("count"))
 
     # -- bandwidth monitor --------------------------------------------------
     def _monitor_loop(self):
