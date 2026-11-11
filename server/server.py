@@ -4,6 +4,7 @@ import os
 import socket
 import ssl
 import struct
+import time
 import threading
 import argparse
 import metadata
@@ -29,6 +30,24 @@ def reset_failed_logins(ip):
     """A successful login clears the counter for this IP."""
     with failed_lock:
         failed_logins.pop(ip, None)
+
+# File the SDN controller reads (the server and the controller share the file system)
+EVENTS_FILE = os.environ.get(
+    "EVENTS_FILE",
+    str(Path(__file__).resolve().parent.parent / "sdn" / "events.jsonl"))
+events_lock = threading.Lock()
+
+
+def report_event(event, ip, **extra):
+    """Append one JSON line for the SDN controller. Never raises."""
+    line = json.dumps({"time": time.time(), "event": event, "ip": ip, **extra})
+    try:
+        with events_lock:                     # one writer at a time
+            with open(EVENTS_FILE, "a") as f:
+                f.write(line + "\n")
+        print(f"[!] SDN event written: {line}")
+    except OSError as e:
+        print(f"[-] Could not write SDN event ({e})")
 
 def parse_args():
     server_dir = Path(__file__).resolve().parent
@@ -193,7 +212,7 @@ def handle_client(conn, addr, STORAGE_DIR):
             if cmd == "LOGIN":
                 username = header_data.get("username")
                 password = header_data.get("password")
-                
+
                 if auth.authenticate(username, password):
                     login_user = username
                     reset_failed_logins(client_ip)
@@ -204,11 +223,12 @@ def handle_client(conn, addr, STORAGE_DIR):
                     print(f"[-] [{client_id}] Failed login attempt for '{username}' "
                           f"({count}/{FAIL_LIMIT} from {client_ip}).")
                     if count >= FAIL_LIMIT:
-                        reset_failed_logins(client_ip)   # start counting again after this
+                        reset_failed_logins(client_ip)
+                        report_event("failed_logins", client_ip, count=FAIL_LIMIT)
                         print(f"[!] [{client_id}] Too many failed logins from {client_ip}; "
                               f"closing connection.")
                         conn.sendall(b'{"status": "ERROR", "msg": "Too many failed login attempts"}\n')
-                        break                            # leaves the while loop; finally closes conn
+                        break
                     conn.sendall(b'{"status": "ERROR", "msg": "Invalid username or password"}\n')
                     
             elif cmd == "REGISTER":

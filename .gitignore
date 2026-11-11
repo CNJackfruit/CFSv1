@@ -18,9 +18,7 @@ venv/
 # Logs & Performance Artifacts
 downloads_check/
 client_downloads/
-results/server.log
-results/*.out
-*.log
+
 
 # Test Artifacts
 *.bin
