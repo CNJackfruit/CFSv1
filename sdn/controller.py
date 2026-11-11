@@ -31,7 +31,8 @@ POLICY_PATH = os.environ.get("POLICY_FILE", os.path.join(HERE, "policy.json"))
 BW_CSV_PATH = os.environ.get("BW_CSV", os.path.join(HERE, "bandwidth.csv"))
 EVENTS_PATH = os.environ.get("EVENTS_FILE", os.path.join(HERE, "events.jsonl"))
 EVENT_INTERVAL = 0.5    # seconds: how often events.jsonl is checked
-
+BLOCK_PRIORITY = 2000   # above every policy rule (those are 1000 and below)
+BLOCK_SECONDS = int(os.environ.get("BLOCK_SECONDS", "30"))
 CHECK_INTERVAL = 2      # seconds: policy file check and port-stats request
 BASELINE_PRIORITY = 1
 DEFAULT_DENY_PRIORITY = 10
@@ -114,10 +115,20 @@ def build_flows(policy):
                        "ipv4_src": server, "tcp_src": port}, "drop", "default"))
     return flows
 
+def build_block_flows(policy, ip):
+    """Two drop flows for one client IP: client -> server port, and the replies."""
+    server, port = policy["server_ip"], policy["server_port"]
+    fwd = {"eth_type": 0x0800, "ip_proto": 6, "ipv4_src": ip,
+           "ipv4_dst": server, "tcp_dst": port}
+    rev = {"eth_type": 0x0800, "ip_proto": 6, "ipv4_src": server,
+           "ipv4_dst": ip, "tcp_src": port}
+    return [(BLOCK_PRIORITY, fwd, "drop", "autoblock"),
+            (BLOCK_PRIORITY, rev, "drop", "autoblock")]
 
 # Safe fallback if policy.json is broken at start-up.
 FALLBACK_POLICY = {"server_ip": "10.0.0.1", "server_port": 9000,
                    "default_action": "deny", "rules": []}
+
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +192,7 @@ class FileShareController(app_manager.RyuApp):
             self.logger.info("Switch %s disconnected", dp.id)
 
     # -- flow installation --------------------------------------------------
-    def _add_flow(self, dp, priority, match_fields, allow):
+    def _add_flow(self, dp, priority, match_fields, allow, hard_timeout=0):
         ofp, parser = dp.ofproto, dp.ofproto_parser
         match = parser.OFPMatch(**match_fields)
         if allow:
@@ -190,7 +201,8 @@ class FileShareController(app_manager.RyuApp):
         else:
             inst = []          # no instructions = drop
         dp.send_msg(parser.OFPFlowMod(datapath=dp, priority=priority,
-                                      match=match, instructions=inst))
+                                      match=match, instructions=inst,
+                                      hard_timeout=hard_timeout))
 
     def install(self, dp):
         """Delete all flows, then install baseline + policy flows."""
@@ -211,7 +223,20 @@ class FileShareController(app_manager.RyuApp):
             self.logger.info("Rule %s %s prio=%d %s", rid, act.upper(), prio,
                              match.get("ipv4_src", "*") if "tcp_dst" in match
                              else "(reply) -> " + match.get("ipv4_dst", "*"))
-
+    def block(self, ip):
+        """Install timed drop flows for one client IP on every connected switch."""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            self.logger.warning("Ignoring event with bad IP %r", ip)
+            return
+        if addr.version != 4 or addr.is_loopback or str(addr) == self.policy["server_ip"]:
+            self.logger.warning("Ignoring block request for %s", ip)
+            return
+        for dp in list(self.datapaths.values()):
+            for prio, match, _act, _rid in build_block_flows(self.policy, str(addr)):
+                self._add_flow(dp, prio, match, False, hard_timeout=BLOCK_SECONDS)
+        self.logger.info("AUTO-BLOCK %s for %d s", addr, BLOCK_SECONDS)
     # -- live reload --------------------------------------------------------
     def _policy_loop(self):
         while True:
@@ -257,8 +282,12 @@ class FileShareController(app_manager.RyuApp):
                 except ValueError:
                     self.logger.warning("Ignoring malformed event line: %r", raw)
                     continue
+                if not isinstance(ev, dict):
+                    continue
                 self.logger.info("EVENT from server: %s ip=%s count=%s",
                                  ev.get("event"), ev.get("ip"), ev.get("count"))
+                if ev.get("event") == "failed_logins":
+                    self.block(ev.get("ip"))
 
     # -- bandwidth monitor --------------------------------------------------
     def _monitor_loop(self):
