@@ -4,7 +4,8 @@ A multi-user file-sharing system where many clients upload and download files at
 
 - **File server** — threaded TLS server on port 9000: `LOGIN`, `REGISTER`, `LIST`, `UPLOAD`, `DOWNLOAD`, SHA-256 verification on both sides, per-file metadata, authenticated access.
 - **SDN** — Mininet topology (one switch, six hosts, 10 Mbps links) plus a Ryu controller that turns `sdn/policy.json` into OpenFlow rules, **reloads the file live**, and logs per-port bandwidth to CSV.
-- **Clients and tests** — a CLI client, an interactive client, and a concurrent test tool that runs N simultaneous transfers and records every one.
+- **Server and SDN working together** — the server counts failed logins per client IP; after 3 it reports the IP to the controller, which **automatically blocks that IP in the switch for a limited time** and restores access by itself ([details](#dynamic-sdn-auto-block)).
+- **Clients and tests** — a CLI client, an interactive client, a concurrent test tool that runs N simultaneous transfers as different users and records every one, and an analysis script that summarises the results.
 
 ---
 
@@ -17,10 +18,12 @@ A multi-user file-sharing system where many clients upload and download files at
 5. [Run without Mininet (localhost)](#run-without-mininet-localhost)
 6. [Command reference](#command-reference)
 7. [SDN policy](#sdn-policy)
-8. [Protocol and data formats](#protocol-and-data-formats)
-9. [Project layout](#project-layout)
-10. [Troubleshooting](#troubleshooting)
-11. [Limitations](#limitations)
+8. [Dynamic SDN: auto-block](#dynamic-sdn-auto-block)
+9. [Test results](#test-results)
+10. [Protocol and data formats](#protocol-and-data-formats)
+11. [Project layout](#project-layout)
+12. [Troubleshooting](#troubleshooting)
+13. [Limitations](#limitations)
 
 ---
 
@@ -29,6 +32,7 @@ A multi-user file-sharing system where many clients upload and download files at
 ```
             Ryu controller (OpenFlow 1.3, TCP 6653)
             policy.json -> flow rules | port stats -> bandwidth.csv
+            sdn/events.jsonl (written by the file server) -> timed drop rules
                               |
                               | OpenFlow
                               v
@@ -125,7 +129,7 @@ python3 tests/make_files.py --sizes 5    # only 5MB.bin
 
 ### 6. User accounts
 
-`users.json` ships with an account `vamshi` (password `vamshi`), which the concurrent test tool uses. To create more accounts, run `python3 client/client.py` and choose **Register** (the server also accepts a `REGISTER` command directly).
+`users.json` ships with `vamshi` (password `vamshi`) and `user0` to `user49` (the password is the user name, e.g. `user1` / `user1`). The concurrent test tool logs in as `user1` to `user5`, so its simultaneous clients are five different users. To create more accounts, run `python3 client/client.py` and choose **Register** (the server also accepts a `REGISTER` command directly).
 
 ---
 
@@ -219,6 +223,20 @@ sh ovs-ofctl -O OpenFlow13 dump-flows s1
 
 Other useful checks: `iperf h1 h2` (about 9 – 10 Mbps with `--bw 10`).
 
+**Auto-block demo** (h6 is allowed by the policy, so any blocking you see comes from the auto-block). Start the controller with a longer block if you want time to look around: `BLOCK_SECONDS=120 ryu-manager sdn/controller.py`. Then, at `mininet>`, run this **three times**:
+
+```
+h6 python3 client/client2.py --host 10.0.0.1 --port 9000 --user user1 --password wrong list
+```
+
+The third reply is `Too many failed login attempts`. The controller prints `EVENT from server: failed_logins ip=10.0.0.6 count=3` and `AUTO-BLOCK 10.0.0.6 for ... s`. Check the switch:
+
+```
+sh ovs-ofctl -O OpenFlow13 dump-flows s1 | grep 2000
+```
+
+Two `priority=2000 ... actions=drop` flows with a `hard_timeout` appear. h6 now times out (`h6 python3 client/client2.py ... --password user1 list`), while `h6 ping -c 2 10.0.0.1` and the same command from h2 still work. Run `sh touch sdn/policy.json` and wait 3 s: the block survives the policy reload with a smaller `hard_timeout`. When the time is up the controller prints `AUTO-BLOCK expired for 10.0.0.6: access restored` and h6 works again.
+
 ### Shut down
 
 ```
@@ -248,6 +266,8 @@ python3 tests/concurrent_tests.py --port 9000 127.0.0.1 4 download tests/files/5
 
 Start the server from the project root: it reads `server.crt`, `server.key` and `metadata.json` relative to the current directory.
 
+The failed-login counter and the `events.jsonl` events also work on localhost, but the controller ignores loopback addresses on purpose, so the auto-block itself can only be demonstrated in Mininet.
+
 ---
 
 ## Command reference
@@ -260,6 +280,8 @@ Start the server from the project root: it reads `server.crt`, `server.key` and 
 | `--storage` | `database` | Storage folder. Only the folder **name** is used, and it is created inside the project root (`--storage server/storage` stores files in `<root>/storage/`) |
 
 `topology.py --server` starts the server with `--storage server/storage`, so files uploaded in the Mininet demo land in `storage/` at the project root.
+
+Security settings (in `server.py`): `FAIL_LIMIT = 3` failed logins from one client IP before the server reports it to the controller (a constant at the top of the file), and the environment variable `EVENTS_FILE` (default `sdn/events.jsonl`) is the file the events are appended to.
 
 ### `client/client2.py` (CLI client)
 
@@ -285,15 +307,24 @@ A menu-driven client (Login / Register, then Upload / List / Download). It conne
 python3 tests/concurrent_tests.py [--port 9000] HOST THREADS {upload|download} FILE TAG
 ```
 
-One process, N threads. Each thread opens its own connection, logs in, waits on a barrier so all threads start together, then performs one transfer. Uploads use unique names (`user<n>_t<i>_p<pid>_<file>`); downloads use one folder per thread.
+One process, N threads. Each thread opens its own connection, logs in as `user1` to `user5` (so the clients are different users), waits on a barrier so all threads start together, then performs one transfer. Uploads use unique names (`user<n>_t<i>_p<pid>_<file>`); downloads use one folder per thread.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `--port` | `9000` | Server port |
+| `--password-fmt` | `user{n}` | Password of `user<n>`; thread *i* logs in as `user(1 + i % 5)` |
 | `--csv` | `results/transfers.csv` | CSV to append one row per transfer to |
 | `--name` | derived from IP (`h2`...) | Value for the `host` column |
 | `--barrier-timeout` | `60` | Seconds to wait for all threads to be ready |
 | `--keep` | off | Keep the temp/download folders |
+
+### `tests/analyse.py`
+
+```
+python3 tests/analyse.py [--csv results/transfers.csv] [--tag-prefix E2_]
+```
+
+Prints one row per tag: number of transfers, failures, min / average / max seconds, average and slowest-client Mbps, and the **aggregate** Mbps (total bytes x 8 divided by the time from the earliest start to the latest finish). Use a different tag for every run (for example `E2_N10_r1`, `E2_N10_r2`), otherwise rows of different runs are merged.
 
 ### `tests/make_files.py`
 
@@ -314,6 +345,8 @@ One process, N threads. Each thread opens its own connection, logs in, waits on 
 |----------------------|---------|---------|
 | `POLICY_FILE` | `sdn/policy.json` | Policy to load and watch |
 | `BW_CSV` | `sdn/bandwidth.csv` | Bandwidth log. Use a path that includes a folder, e.g. `BW_CSV=results/bandwidth.csv` |
+| `EVENTS_FILE` | `sdn/events.jsonl` | File the server writes events to and the controller reads (set the same value for both if you change it) |
+| `BLOCK_SECONDS` | `30` | How long an auto-block lasts |
 
 ---
 
@@ -341,6 +374,56 @@ One process, N threads. Each thread opens its own connection, logs in, waits on 
 - When flows are reinstalled, a client that has just become denied loses its running transfer (TCP retries, then the client times out).
 
 **Bandwidth monitor:** every 2 s the controller requests port counters and writes the Mbps for each port to `bandwidth.csv`, printing only ports above 0.01 Mbps. `rx`/`tx` are from the **switch's** point of view: on a client's port, `rx` is what the client sends (an upload) and `tx` is what it receives (a download); on the server's port it is the other way round.
+
+---
+
+## Dynamic SDN: auto-block
+
+The controller does not only react to edits of `policy.json`: it also reacts **by itself** to something the application observed.
+
+```
+client h6 (wrong passwords)        file server (h1)                Ryu controller              switch s1
+        | 3 failed logins ------------> counts per client IP
+        |                              3rd failure: closes the
+        |                              connection and appends a ---> reads events.jsonl
+        |                              line to sdn/events.jsonl      every 0.5 s, validates it
+        |                                                            installs 2 drop flows ---> drops h6 <-> :9000
+        | next connect: timeout                                      (priority 2000,          flows are removed by
+        | ... block time over ...                                     hard_timeout)           the switch itself
+        | access works again                                          logs "expired"
+```
+
+**Server side (`server/server.py`).** Failed logins are counted per client **IP** (not per port, because every new connection gets a new port, and not per user name). A successful login resets the counter. At `FAIL_LIMIT` (3) the server resets the counter, appends one JSON line to `sdn/events.jsonl`, replies `Too many failed login attempts` and closes that connection:
+
+```json
+{"time": 1794293281.05, "event": "failed_logins", "ip": "10.0.0.6", "count": 3}
+```
+
+**Controller side (`sdn/controller.py`).**
+
+- A background loop checks the events file every 0.5 s. It starts reading at the **end** of the file, so events from earlier runs are ignored, and it only consumes complete lines.
+- Every line is validated: invalid JSON, non-object lines, bad or non-IPv4 addresses, loopback addresses and the server's own address are ignored.
+- A valid `failed_logins` event installs two drop flows at **priority 2000** (above every policy rule, which are 1000 and below): client to server port, and the server's replies to the client. Only TCP to the file server is affected, so ping still works and other hosts are not touched.
+- The flows carry an OpenFlow `hard_timeout` (`BLOCK_SECONDS`, default 30), so the **switch itself deletes them** when the time is up. The controller also forgets the block and logs `AUTO-BLOCK expired for <ip>: access restored`.
+- A policy reload deletes every flow and reinstalls the policy. Active blocks are put back with only their **remaining** time, so a reload neither removes nor extends a block.
+
+Controller log lines: `EVENT from server: ...`, `AUTO-BLOCK <ip> for <n> s`, `AUTO-BLOCK expired for <ip>: access restored`. Check the switch with `sh ovs-ofctl -O OpenFlow13 dump-flows s1 | grep 2000`.
+
+---
+
+## Test results
+
+Measured in Mininet with 10 Mbps links, downloading `5MB.bin`, N simultaneous clients spread over h2, h3, h5 and h6 (N = 1 and 2 and 5 from one host). Rows are in `results/transfers.csv`; the table comes from `python3 tests/analyse.py --tag-prefix E2_`.
+
+| Clients (N) | Failures | Avg seconds per transfer | Avg Mbps per client | Aggregate Mbps |
+|-------------|----------|--------------------------|---------------------|----------------|
+| 1 | 0 | 4.73 | 8.86 | 8.86 |
+| 2 | 0 | 9.19 | 4.56 | 8.94 |
+| 5 | 0 | 22.94 | 1.83 | 8.94 |
+| 10 (`E2_N10_r1`) | 0 | 41.06 | 1.04 | 7.51 |
+| 20 | 0 | 89.03 | 0.47 | 9.21 |
+
+The aggregate stays close to the 10 Mbps link limit (a little below it because of TCP/TLS overhead) and each client gets about 9 / N Mbps, so the link is shared evenly. The N = 10 run is an outlier: one host (h6) started about 2 s after the others and finished much later, which stretched the measuring window and lowered the aggregate. All transfers were hash-checked and every run had `failed=0`.
 
 ---
 
@@ -374,6 +457,7 @@ Every message is **one JSON object per line**, ending with `\n`, at most 4096 by
 **Rules**
 
 - `LOGIN` first: every command except `LOGIN`, `REGISTER` and `QUIT` is refused with `not logged in` until it succeeds. Login state is per connection.
+- After 3 failed logins from the same client IP (counted across connections), the server replies `Too many failed login attempts`, closes the connection and writes a `failed_logins` event to `sdn/events.jsonl` (see [auto-block](#dynamic-sdn-auto-block)).
 - One connection handles many commands in sequence, one at a time. The server drops a connection after 60 s of inactivity.
 - Upload: the client sends the header and then `size` bytes; the server stores them in a `.part.<client>` temp file, checks size and SHA-256, and only then renames it into place and updates the metadata. Uploads of 200 MB or more are rejected.
 - Any logged-in user may download any file; an existing file can only be overwritten by its **owner**. The owner check, rename and metadata update happen under one lock.
@@ -390,6 +474,8 @@ Every message is **one JSON object per line**, ending with `\n`, at most 4096 by
 ```
 
 **`bandwidth.csv`** (controller): `time,switch,port,host,rx_mbps,tx_mbps`
+
+**`sdn/events.jsonl`** (server writes, controller reads): one JSON object per line, `{"time": <unix seconds>, "event": "failed_logins", "ip": "<client ip>", "count": 3}`. It is created at run time and is git-ignored.
 
 **`results/transfers.csv`** (test tool): `tag,time,host,user,op,file,size_bytes,seconds,mbps,ok` — `seconds` covers the transfer only (not login or the checksum), `mbps = size_bytes * 8 / seconds / 1e6`, `ok` is 1 or 0.
 
@@ -411,15 +497,17 @@ CFSv1/
 │   └── utils.py           ProtocolReader (same as server/utils.py)
 ├── sdn/
 │   ├── topology.py        Mininet topology (+ optional file server on h1)
-│   ├── controller.py      Ryu app: policy rules, live reload, bandwidth monitor
-│   └── policy.json
+│   ├── controller.py      Ryu app: policy rules, live reload, bandwidth monitor, auto-block
+│   └── policy.json            (events.jsonl is created here at run time)
 ├── tests/
 │   ├── make_files.py      create random test files in tests/files/
-│   └── concurrent_tests.py   N simultaneous transfers -> results/transfers.csv
+│   ├── concurrent_tests.py   N simultaneous transfers as user1..user5 -> results/transfers.csv
+│   └── analyse.py         summary table per experiment tag
 ├── database/              default storage folder (.gitkeep)
 ├── users.json             root copy of the user database
 ├── output.png, output2.png   sample run screenshots
-└── (created at run time)  server.crt  server.key  metadata.json  storage/  results/
+├── results/               transfers.csv (test results), server.log
+└── (created at run time)  server.crt  server.key  metadata.json  storage/  sdn/events.jsonl
 ```
 
 ---
@@ -437,6 +525,10 @@ CFSv1/
 | `Address already in use` (6653 or 9000) | Leftover state: `sudo mn -c`, then check `pgrep -af ryu-manager` and `pgrep -af server.py` |
 | `Permission denied` on `metadata.json`, `storage/` or `results/` | They were created by processes run under `sudo` (the Mininet demo). Run `sudo chown -R "$USER": .` |
 | `Switch None disconnected` in the controller log at start-up | Harmless; it appears in a normal run |
+| No `AUTO-BLOCK` line after 3 failed logins | Check that `sdn/events.jsonl` got a new line. If not, the server is not running the current `server.py` (restart it). If yes, restart the controller: it only reads events written after it started. Loopback addresses (localhost tests) are ignored on purpose |
+| The block vanished before I looked | It lasts `BLOCK_SECONDS` (30 by default) and the switch removes it itself. Start the controller with `BLOCK_SECONDS=120` for demos |
+| `dump-flows` shows nothing at the `mininet>` prompt | Use `sh ovs-ofctl -O OpenFlow13 dump-flows s1` (the `sh` prefix is required; plain `dump-flows` is not a Mininet command) |
+| All hosts unreachable and no `Switch 1 connected` after editing `controller.py` | Never name a method `_event_loop` (or other Ryu-internal names such as `events` or `threads`) in the controller class: Ryu's own event dispatcher is called `_event_loop` and overriding it stops all handlers. The file-reading loop is called `_server_event_loop` |
 
 ---
 
@@ -446,5 +538,9 @@ CFSv1/
 - **Access policy is by source IP**, which can be spoofed on a real network. Changing the policy reinstalls all flows, which interrupts running transfers of newly denied clients.
 - One switch, one controller (a single point of failure), one thread per client connection.
 - Everything runs on one computer with emulated links, so absolute throughput numbers are not real-network numbers; at 10 Mbps the CPU is not the bottleneck, at much higher link speeds it becomes part of the result.
-- `concurrent_tests.py` logs in as `vamshi` (hard-coded in `login_as`); its `--password-fmt` option is accepted but currently ignored.
-- No `DELETE` command, and no analysis script yet: results are raw CSV (`results/transfers.csv`, `bandwidth.csv`).
+- **Auto-block is by source IP**: IPs can be spoofed, and several users behind one IP are blocked together. The only trigger is repeated failed logins; the bandwidth monitor only logs and does not react.
+- The server tells the controller through a shared file (`sdn/events.jsonl`). That works because Mininet hosts and the controller run on one machine; a real deployment would use a network API (for example Ryu's REST application).
+- The failed-login counter is kept in server memory (it is lost when the server restarts) and is reset by a successful login or when it reaches the limit.
+- There is no switch to turn the auto-block off, so a built-in comparison against a static-policy baseline is not provided.
+- No `DELETE` command.
+
