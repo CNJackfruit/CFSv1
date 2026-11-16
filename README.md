@@ -1,358 +1,525 @@
-# CFSv1 — Concurrent File Sharing over TLS with SDN Control
+# CFSv1 — Concurrent File Sharing with TLS and SDN
 
-A multi-user file-sharing system where many clients upload and download files at the same time over TCP/TLS, while a Software-Defined Network (Mininet + a Ryu OpenFlow controller) enforces access policies and measures bandwidth.
+A multi-client file-sharing system built using **Python, TCP/TLS, Mininet, Open vSwitch, and the Ryu SDN controller**.
 
-- **File server** — threaded TLS server on port 9000: `LOGIN`, `REGISTER`, `LIST`, `UPLOAD`, `DOWNLOAD`, SHA-256 verification on both sides, per-file metadata, authenticated access.
-- **SDN** — Mininet topology (one switch, six hosts, 10 Mbps links) plus a Ryu controller that turns `sdn/policy.json` into OpenFlow rules, **reloads the file live**, and logs per-port bandwidth to CSV.
-- **Server and SDN working together** — the server counts failed logins per client IP; after 3 it reports the IP to the controller, which **automatically blocks that IP in the switch for a limited time** and restores access by itself ([details](#dynamic-sdn-auto-block)).
-- **Clients and tests** — a CLI client, an interactive client, a concurrent test tool that runs N simultaneous transfers as different users and records every one, and an analysis script that summarises the results.
+CFSv1 enables multiple clients to upload and download files concurrently while a Software-Defined Networking (SDN) controller manages network access policies, monitors bandwidth, and dynamically blocks clients after repeated authentication failures.
 
----
+## Overview
 
-## Contents
+Traditional file-sharing applications handle data transfer at the application layer. CFSv1 extends this by integrating an SDN-controlled network that can enforce access policies independently of the file server.
 
-1. [Architecture](#architecture)
-2. [Prerequisites](#prerequisites)
-3. [Setup](#setup)
-4. [Run the full demo (Mininet)](#run-the-full-demo-mininet)
-5. [Run without Mininet (localhost)](#run-without-mininet-localhost)
-6. [Command reference](#command-reference)
-7. [SDN policy](#sdn-policy)
-8. [Dynamic SDN: auto-block](#dynamic-sdn-auto-block)
-9. [Test results](#test-results)
-10. [Protocol and data formats](#protocol-and-data-formats)
-11. [Project layout](#project-layout)
-12. [Troubleshooting](#troubleshooting)
-13. [Limitations](#limitations)
+The project combines three main components:
+
+- **Concurrent file sharing:** A multithreaded TCP/TLS server supporting user authentication, file uploads, downloads, and file integrity verification.
+- **SDN-based network control:** A Ryu OpenFlow controller that manages client access through configurable policies and monitors network bandwidth.
+- **Dynamic security response:** Failed-login events from the application are communicated to the SDN controller, which temporarily blocks the offending client at the network level.
+
+## Key Features
+
+### File-sharing system
+- Multiple clients can connect and transfer files concurrently.
+- User registration and login.
+- Authenticated file listing, uploading, and downloading.
+- SHA-256 checksums for file integrity verification.
+- File ownership and metadata management.
+- Thread-safe file operations and metadata updates.
+- TLS-encrypted client-server communication.
+
+### SDN integration
+- Mininet-based network topology with one Open vSwitch.
+- Ryu controller using OpenFlow 1.3.
+- IP-based allow/deny policies for file-server traffic.
+- Live policy updates without restarting the controller.
+- Periodic bandwidth monitoring and CSV logging.
+- Network-level blocking of clients after repeated failed logins.
+- Automatic expiration of temporary blocking rules.
+
+### Testing and analysis
+- Concurrent transfer testing using multiple threads.
+- Support for upload and download experiments.
+- Tests can be distributed across different Mininet hosts.
+- Per-transfer timing, throughput, and success/failure logging.
+- Aggregate throughput analysis across experiment runs.
 
 ---
 
 ## Architecture
 
+```text
+                         +---------------------------+
+                         |       Ryu Controller      |
+                         |                           |
+                         |  - OpenFlow 1.3           |
+                         |  - Access policy engine   |
+                         |  - Bandwidth monitoring   |
+                         |  - Dynamic auto-block     |
+                         +-------------+-------------+
+                                       |
+                                  OpenFlow 1.3
+                                       |
+                                       v
+       +---------------------------------------------------+
+       |                  Open vSwitch                     |
+       |                       s1                          |
+       +---------------------------------------------------+
+           |          |          |          |          |
+           |          |          |          |          |
+          h1         h2         h3         h4         h5/h6
+        Server     Client     Client     Client      Clients
+       10.0.0.1  10.0.0.2  10.0.0.3  10.0.0.4  10.0.0.5-6
+           |
+           |
+     TCP/TLS :9000
+           |
+           v
+    File-sharing service
+    - Authentication
+    - Upload / Download
+    - Metadata management
+    - SHA-256 verification
+    - Failed-login detection
+           |
+           | Failed-login events
+           v
+      sdn/events.jsonl
+           |
+           +----------------------> Ryu Controller
 ```
-            Ryu controller (OpenFlow 1.3, TCP 6653)
-            policy.json -> flow rules | port stats -> bandwidth.csv
-            sdn/events.jsonl (written by the file server) -> timed drop rules
-                              |
-                              | OpenFlow
-                              v
-   h2 --+
-   h3 --+                                  +-- h1  file server (TLS, TCP 9000)
-   h4 --+---- s1 (Open vSwitch) -----------+       10.0.0.1
-   h5 --+      10 Mbps links
-   h6 --+   clients 10.0.0.2 - 10.0.0.6
-```
 
-| Host | IP | Switch port | Role |
-|------|----|-------------|------|
-| h1 | 10.0.0.1 | 1 | File server |
-| h2 – h6 | 10.0.0.2 – 10.0.0.6 | 2 – 6 | Clients (**h4 is denied** by the default policy) |
+### Network topology
 
-| Port | Protocol | Used by |
-|------|----------|---------|
-| 9000 | TCP + TLS | File server on h1 |
-| 6653 | TCP (OpenFlow 1.3) | Ryu controller; the switch connects to it |
+The Mininet topology consists of one server, five clients, and one Open vSwitch.
 
-Hosts in Mininet share the machine's file system, so all commands below are run **from the project root**; the test tool gives every thread its own temporary download folder for this reason.
+| Host | IP address | Role |
+|---|---|---|
+| h1 | 10.0.0.1 | File server |
+| h2 | 10.0.0.2 | Client |
+| h3 | 10.0.0.3 | Client |
+| h4 | 10.0.0.4 | Client |
+| h5 | 10.0.0.5 | Client |
+| h6 | 10.0.0.6 | Client |
+
+The default topology uses 10 Mbps links. The default SDN policy denies h4 while allowing the other clients.
+
+### Communication
+
+| Component | Protocol | Port |
+|---|---|---|
+| File server and clients | TCP over TLS | 9000 |
+| Ryu controller and switch | OpenFlow 1.3 over TCP | 6653 |
+
+The file server handles application-level operations, while the SDN controller independently controls network-level access to the server.
 
 ---
 
-## Prerequisites
+## Technology Stack
 
-- Linux with `sudo` (Mininet needs Linux; on Windows or macOS use an Ubuntu VM)
-- Mininet and Open vSwitch (system packages)
-- Python 3.9 for the Ryu virtual environment (Ryu is old and breaks on newer Pythons)
-- `openssl`, `git`
+| Technology | Purpose |
+|---|---|
+| Python | Server, clients, controller, and testing tools |
+| TCP sockets | Client-server communication |
+| TLS / SSL | Encrypted file transfers |
+| SHA-256 | File integrity verification and password hashing |
+| Mininet | Virtual network emulation |
+| Open vSwitch | SDN-enabled virtual switch |
+| Ryu | SDN controller |
+| OpenFlow 1.3 | Controller-switch communication |
+| JSON | Application protocol, configuration, and metadata |
+| CSV | Transfer and bandwidth measurements |
 
-The server, clients and tests use **only the Python standard library** (3.8+). The only pip dependencies are Ryu and its pinned helpers, and they live in the virtual environment.
+The file server, clients, and test scripts use Python's standard library. Ryu and its dependencies are installed separately in a virtual environment.
 
 ---
 
-## Setup
+## Getting Started
 
-Run everything from the project root unless stated otherwise.
+### Prerequisites
 
-### 1. Clone
+- Ubuntu Linux (recommended: Ubuntu 22.04).
+- Python 3.8 or newer for the server, clients, and tests.
+- Python 3.9 for the Ryu virtual environment.
+- Mininet and Open vSwitch.
+- Git and OpenSSL.
+
+**Note:** Mininet requires a Linux environment. Windows and macOS users can use an Ubuntu virtual machine.
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/CNJackfruit/CFSv1.git
 cd CFSv1
 ```
 
+Run subsequent commands from the project root unless stated otherwise.
+
 ### 2. Install Mininet and Open vSwitch
 
 ```bash
 sudo apt update
 sudo apt install -y mininet openvswitch-switch
+```
+
+Verify the installation:
+
+```bash
 sudo mn --version
 ```
 
-Mininet is installed system-wide and run with `sudo python3`, so it does **not** go in the virtual environment.
+### 3. Set up the Ryu environment
 
-### 3. Create the Ryu virtual environment
+Ryu 4.34 requires an older Python packaging toolchain. The following installation sequence avoids common build issues.
 
 ```bash
 python3.9 -m venv ryu-env
 source ryu-env/bin/activate
 
 pip install --upgrade pip
-pip install eventlet==0.30.2                    # must be installed before ryu
-pip install "setuptools==57.5.0" wheel pbr      # old setuptools: ryu's setup.py needs it
+pip install eventlet==0.30.2
+pip install "setuptools==57.5.0" wheel pbr
 pip install --no-build-isolation ryu==4.34
-
-ryu-manager --version                           # expect: ryu-manager 4.34
 ```
 
-Why these extra steps: with a current `setuptools`, a plain `pip install ryu` fails with `AttributeError: ... no attribute 'get_script_args'` (`ERROR: Failed to build 'ryu'`). Building against `setuptools==57.5.0` without build isolation avoids it. Keep `pbr` in the install line and pin `ryu==4.34`; otherwise pip can silently fall back to a very old release of Ryu (2.2) that cannot run this controller.
+Verify:
 
-If your distribution has no Python 3.9 package, [`uv`](https://docs.astral.sh/uv/) can fetch one: replace the first line with `uv venv --seed --python 3.9 ryu-env`. If you already have a working Ryu environment (`ryu-manager --version` works), you can skip this step.
+```bash
+ryu-manager --version
+```
 
-`ryu-env/` is already in `.gitignore`.
+Expected version:
 
-### 4. Create the TLS certificate
+```text
+ryu-manager 4.34
+```
 
-The server loads `server.crt` and `server.key` from the **current directory**. They are git-ignored, so every fresh clone must create them:
+If Python 3.9 is not available through your distribution, you can use [uv](https://docs.astral.sh/uv/) to create the environment:
+
+```bash
+uv venv --seed --python 3.9 ryu-env
+```
+
+If you already have a working Ryu 4.34 environment, you can skip this step.
+
+### 4. Generate TLS certificates
+
+The server expects `server.crt` and `server.key` in the project root.
+
+Generate a self-signed certificate:
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout server.key -out server.crt -days 365 -subj "/CN=localhost"
+  -keyout server.key \
+  -out server.crt \
+  -days 365 \
+  -subj "/CN=localhost"
 ```
 
-### 5. Create the test files
+These certificate files are generated locally and are not committed to the repository.
 
-`*.bin` files are git-ignored. Generate random test data (1, 5, 10 and 50 MB) into `tests/files/`:
+### 5. Generate test files
+
+The test files are generated locally rather than stored in Git.
+
+Generate all supported file sizes:
 
 ```bash
-python3 tests/make_files.py              # all sizes
-python3 tests/make_files.py --sizes 5    # only 5MB.bin
+python3 tests/make_files.py
 ```
+
+Generate only a 5 MB file:
+
+```bash
+python3 tests/make_files.py --sizes 5
+```
+
+Generated files are placed in `tests/files/` by default.
 
 ### 6. User accounts
 
-`users.json` ships with `vamshi` (password `vamshi`) and `user0` to `user49` (the password is the user name, e.g. `user1` / `user1`). The concurrent test tool logs in as `user1` to `user5`, so its simultaneous clients are five different users. To create more accounts, run `python3 client/client.py` and choose **Register** (the server also accepts a `REGISTER` command directly).
+The repository includes sample accounts:
+
+| Username | Password |
+|---|---|
+| vamshi | vamshi |
+| user0 | user0 |
+| user1 | user1 |
+| user2 | user2 |
+| ... | ... |
+| user49 | user49 |
+
+The concurrent test tool uses `user1` through `user5`.
+
+You can register additional users through the interactive client.
 
 ---
 
-## Run the full demo (Mininet)
+## Running the Full SDN Demonstration
 
-You need two terminals, both in the project root.
+The full demonstration requires two terminals.
 
-> **Order matters.** `sudo mn -c` also kills any running `ryu-manager`, so run it **before** starting the controller, never after.
+Both terminals should be opened in the project root.
 
-### Terminal 1 — controller
+### Terminal 1 — Start the Ryu controller
+
+First, clean up any previous Mininet environment:
 
 ```bash
-sudo mn -c                        # clean leftovers from any previous run
+sudo mn -c
+```
+
+Activate the Ryu environment:
+
+```bash
 source ryu-env/bin/activate
+```
+
+Start the controller:
+
+```bash
 ryu-manager sdn/controller.py
 ```
 
-Expect `Policy loaded from .../sdn/policy.json`, then, once the switch connects, `Switch 1 connected` followed by the installed rules. (A `Switch None disconnected` line at start-up is harmless.) Bandwidth lines (`s1 port 2 (h2): rx ... tx ...`) appear while traffic flows.
+The controller should load `sdn/policy.json` and wait for the Open vSwitch connection.
 
-### Terminal 2 — Mininet and the file server
+Once Mininet starts, you should see a switch connection message and the installed policy rules.
+
+**Important:** Run `sudo mn -c` before starting Ryu. It can also terminate an already-running controller.
+
+### Terminal 2 — Start Mininet and the file server
 
 ```bash
 sudo python3 sdn/topology.py --server
 ```
 
-This builds the topology and starts the file server on h1 (log: `results/server.log`). Wait for the `mininet>` prompt.
+This creates the virtual network and starts the file server on h1.
 
-### Run the tests
+The server log is written to:
 
-Type these **at the `mininet>` prompt**, without the `mininet>` prefix (pasting the prompt too produces `*** Unknown command: mininet> ...`).
-
-**1. Connectivity check** (ping is always allowed; only TCP to port 9000 is policy-controlled):
-
+```text
+results/server.log
 ```
+
+Wait for the `mininet>` prompt.
+
+### 1. Check network connectivity
+
+At the Mininet prompt:
+
+```text
 pingall
 ```
 
-**2. Concurrent upload** — four simultaneous clients on h2, each uploading the 5 MB file under a unique name:
+The default SDN policy controls TCP traffic to the file-server port. Ping traffic remains available.
 
-```
+### 2. Test concurrent uploads
+
+Run four simultaneous uploads from h2:
+
+```text
 h2 python3 tests/concurrent_tests.py --port 9000 10.0.0.1 4 upload tests/files/5MB.bin run_5mb_up
 ```
 
-**3. Verify the server's file registry:**
+Each thread establishes its own connection and authenticates as a separate user.
 
-```
+### 3. Verify uploaded files
+
+```text
 h2 python3 client/client2.py --host 10.0.0.1 --port 9000 --user vamshi --password vamshi list
 ```
 
-**4. Concurrent download** — four simultaneous clients downloading `5MB.bin` (uploaded automatically first as an untimed set-up step), each hash-checked:
+### 4. Test concurrent downloads
 
-```
+```text
 h2 python3 tests/concurrent_tests.py --port 9000 10.0.0.1 4 download tests/files/5MB.bin run_5mb_dl
 ```
 
-Each test prints one summary line. A good run looks like this (4 clients share one 10 Mbps server link, so about 20 s for 4 x 5 MB):
+The test tool ensures the requested file exists before the timed download experiment.
 
-```
+Every downloaded file is verified using SHA-256.
+
+A successful run produces output similar to:
+
+```text
 [run_5mb_up] upload threads=4 ok=4 failed=0 wall=19.726s min=19.021s avg=19.241s max=19.704s
+
 [run_5mb_dl] download threads=4 ok=4 failed=0 wall=20.117s min=19.567s avg=19.794s max=20.110s
 ```
 
-`failed=0` means every transfer completed and its SHA-256 matched. The command exits non-zero if any transfer failed.
+`failed=0` indicates that all transfers completed successfully and passed integrity verification.
 
-![Mininet session: topology start-up, concurrent upload, list, concurrent download](output.png)
+### 5. Test SDN access control
 
-![Ryu controller: installed policy rules and live bandwidth per port](output2.png)
+The default policy denies h4 (`10.0.0.4`).
 
-### Try the SDN features
+Try accessing the file server from h4:
 
-**Spread the load across hosts** (the controller then sees different source IPs; use the same tag everywhere):
-
-```
-h2 python3 tests/concurrent_tests.py 10.0.0.1 4 download tests/files/5MB.bin E2_N16 &
-h3 python3 tests/concurrent_tests.py 10.0.0.1 4 download tests/files/5MB.bin E2_N16 &
-h5 python3 tests/concurrent_tests.py 10.0.0.1 4 download tests/files/5MB.bin E2_N16 &
-h6 python3 tests/concurrent_tests.py 10.0.0.1 4 download tests/files/5MB.bin E2_N16 &
-```
-
-**A denied client times out.** The default policy denies 10.0.0.4 (h4). Its connection attempt is dropped by the switch, and the client reports `connection timed out (blocked by network policy?)` after 5 s:
-
-```
+```text
 h4 python3 client/client2.py --host 10.0.0.1 --port 9000 --user vamshi --password vamshi list
 ```
 
-**Live policy edit** (no restart): while a transfer runs, edit `sdn/policy.json` (for example add `{"id": 0, "action": "deny", "src_ip": "10.0.0.2"}` as the first rule) and save. Within about 2 s the controller logs `Policy reloaded at HH:MM:SS` and h2 is blocked. Remove the rule and access returns. A syntactically broken file is rejected with a warning and the old policy stays active. Inspect what the switch actually holds with:
+The connection should time out because the switch drops the traffic.
 
+### 6. Test live policy updates
+
+While the controller is running, edit:
+
+```text
+sdn/policy.json
 ```
+
+For example, add a deny rule for h2:
+
+```json
+{
+  "id": 0,
+  "action": "deny",
+  "src_ip": "10.0.0.2"
+}
+```
+
+The controller checks the policy file periodically and reloads valid changes without requiring a restart.
+
+The updated rules should take effect within approximately two seconds.
+
+Remove the deny rule to restore access.
+
+To inspect the installed OpenFlow rules:
+
+```text
 sh ovs-ofctl -O OpenFlow13 dump-flows s1
 ```
 
-Other useful checks: `iperf h1 h2` (about 9 – 10 Mbps with `--bw 10`).
+### 7. Test dynamic auto-blocking
 
-**Auto-block demo** (h6 is allowed by the policy, so any blocking you see comes from the auto-block). Start the controller with a longer block if you want time to look around: `BLOCK_SECONDS=120 ryu-manager sdn/controller.py`. Then, at `mininet>`, run this **three times**:
+The application tracks failed login attempts by client IP address.
 
+After three failed login attempts, the server writes an event to `sdn/events.jsonl`. The controller reads this event and installs temporary OpenFlow drop rules for the offending client.
+
+For a longer demonstration window, start the controller with:
+
+```bash
+BLOCK_SECONDS=120 ryu-manager sdn/controller.py
 ```
+
+Use h6, which is allowed by the default policy.
+
+Run the following command three times from the Mininet prompt:
+
+```text
 h6 python3 client/client2.py --host 10.0.0.1 --port 9000 --user user1 --password wrong list
 ```
 
-The third reply is `Too many failed login attempts`. The controller prints `EVENT from server: failed_logins ip=10.0.0.6 count=3` and `AUTO-BLOCK 10.0.0.6 for ... s`. Check the switch:
+After the third failed attempt, the server reports:
 
+```text
+Too many failed login attempts
 ```
+
+The controller should log an event and an auto-block message similar to:
+
+```text
+EVENT from server: failed_logins ip=10.0.0.6 count=3
+AUTO-BLOCK 10.0.0.6 for 120 s
+```
+
+Inspect the switch rules:
+
+```text
 sh ovs-ofctl -O OpenFlow13 dump-flows s1 | grep 2000
 ```
 
-Two `priority=2000 ... actions=drop` flows with a `hard_timeout` appear. h6 now times out (`h6 python3 client/client2.py ... --password user1 list`), while `h6 ping -c 2 10.0.0.1` and the same command from h2 still work. Run `sh touch sdn/policy.json` and wait 3 s: the block survives the policy reload with a smaller `hard_timeout`. When the time is up the controller prints `AUTO-BLOCK expired for 10.0.0.6: access restored` and h6 works again.
+The controller installs high-priority drop rules with a temporary timeout.
 
-### Shut down
+During the block:
 
-```
+- h6 cannot access the file server.
+- h6 can still ping the server.
+- Other allowed clients can still access the server.
+
+When the timeout expires, the switch automatically removes the blocking rules and the controller reports that access has been restored.
+
+### 8. Shut down
+
+Exit Mininet:
+
+```text
 exit
 ```
 
-Then press `Ctrl+C` in Terminal 1 and run `sudo mn -c`.
+Stop the Ryu controller using `Ctrl+C`.
 
----
-
-## Run without Mininet (localhost)
-
-Useful for debugging the server and clients without the network layer. No SDN policy applies here.
+Clean up the Mininet environment:
 
 ```bash
-# Terminal 1 (project root; needs server.crt and server.key from setup step 4)
+sudo mn -c
+```
+
+---
+
+## Running Without Mininet
+
+The file-sharing application can also be tested independently of the SDN layer.
+
+Start the server from the project root:
+
+```bash
 python3 server/server.py --port 9000
-
-# Terminal 2
-python3 client/client2.py --host 127.0.0.1 --port 9000 --user vamshi --password vamshi list
-python3 client/client2.py --host 127.0.0.1 --port 9000 --user vamshi --password vamshi upload tests/files/1MB.bin
-python3 client/client2.py --host 127.0.0.1 --port 9000 --user vamshi --password vamshi download 1MB.bin --dest downloads
-
-python3 tests/concurrent_tests.py --port 9000 127.0.0.1 4 upload   tests/files/5MB.bin local_up
-python3 tests/concurrent_tests.py --port 9000 127.0.0.1 4 download tests/files/5MB.bin local_dl
 ```
 
-Start the server from the project root: it reads `server.crt`, `server.key` and `metadata.json` relative to the current directory.
+In another terminal, list files:
 
-The failed-login counter and the `events.jsonl` events also work on localhost, but the controller ignores loopback addresses on purpose, so the auto-block itself can only be demonstrated in Mininet.
+```bash
+python3 client/client2.py \
+  --host 127.0.0.1 --port 9000 \
+  --user vamshi --password vamshi list
+```
+
+Upload a file:
+
+```bash
+python3 client/client2.py \
+  --host 127.0.0.1 --port 9000 \
+  --user vamshi --password vamshi \
+  upload tests/files/1MB.bin
+```
+
+Download a file:
+
+```bash
+python3 client/client2.py \
+  --host 127.0.0.1 --port 9000 \
+  --user vamshi --password vamshi \
+  download 1MB.bin --dest downloads
+```
+
+Run concurrent uploads:
+
+```bash
+python3 tests/concurrent_tests.py \
+  --port 9000 127.0.0.1 4 upload \
+  tests/files/5MB.bin local_up
+```
+
+Run concurrent downloads:
+
+```bash
+python3 tests/concurrent_tests.py \
+  --port 9000 127.0.0.1 4 download \
+  tests/files/5MB.bin local_dl
+```
+
+The application-level failed-login events also work in localhost mode. However, the controller intentionally ignores loopback addresses, so network-level auto-blocking must be demonstrated through Mininet.
 
 ---
 
-## Command reference
+## SDN Policy Configuration
 
-### `server/server.py`
+The controller reads its access-control rules from:
 
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--port` | `9000` | TCP port to listen on |
-| `--storage` | `database` | Storage folder. Only the folder **name** is used, and it is created inside the project root (`--storage server/storage` stores files in `<root>/storage/`) |
-
-`topology.py --server` starts the server with `--storage server/storage`, so files uploaded in the Mininet demo land in `storage/` at the project root.
-
-Security settings (in `server.py`): `FAIL_LIMIT = 3` failed logins from one client IP before the server reports it to the controller (a constant at the top of the file), and the environment variable `EVENTS_FILE` (default `sdn/events.jsonl`) is the file the events are appended to.
-
-### `client/client2.py` (CLI client)
-
-```
-python3 client/client2.py --host H --port P --user U --password PW  <command>
+```text
+sdn/policy.json
 ```
 
-| Command | Description |
-|---------|-------------|
-| `list` | Show every file with owner, size, download count and upload time |
-| `upload FILE` | Upload a file (64 KB chunks; SHA-256 computed before the timer starts) |
-| `download NAME [--dest DIR]` | Download to a temp file, verify SHA-256, then rename. `--dest` defaults to `.` |
-
-Failures print a one-line message and exit with code 1. Each transfer appends a row to `./transfers.csv` (`timestamp,operation,filename,bytes,seconds,mbps`).
-
-### `client/client.py` (interactive client)
-
-A menu-driven client (Login / Register, then Upload / List / Download). It connects to `0.0.0.0:9000` (constants at the top of the file) and saves downloads in `client_downloads/`.
-
-### `tests/concurrent_tests.py`
-
-```
-python3 tests/concurrent_tests.py [--port 9000] HOST THREADS {upload|download} FILE TAG
-```
-
-One process, N threads. Each thread opens its own connection, logs in as `user1` to `user5` (so the clients are different users), waits on a barrier so all threads start together, then performs one transfer. Uploads use unique names (`user<n>_t<i>_p<pid>_<file>`); downloads use one folder per thread.
-
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--port` | `9000` | Server port |
-| `--password-fmt` | `user{n}` | Password of `user<n>`; thread *i* logs in as `user(1 + i % 5)` |
-| `--csv` | `results/transfers.csv` | CSV to append one row per transfer to |
-| `--name` | derived from IP (`h2`...) | Value for the `host` column |
-| `--barrier-timeout` | `60` | Seconds to wait for all threads to be ready |
-| `--keep` | off | Keep the temp/download folders |
-
-### `tests/analyse.py`
-
-```
-python3 tests/analyse.py [--csv results/transfers.csv] [--tag-prefix E2_]
-```
-
-Prints one row per tag: number of transfers, failures, min / average / max seconds, average and slowest-client Mbps, and the **aggregate** Mbps (total bytes x 8 divided by the time from the earliest start to the latest finish). Use a different tag for every run (for example `E2_N10_r1`, `E2_N10_r2`), otherwise rows of different runs are merged.
-
-### `tests/make_files.py`
-
-`--sizes 1 5 10 50` (MB), `--dir tests/files`, `--force` (overwrite existing files).
-
-### `sdn/topology.py` (run with `sudo python3`)
-
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--bw` | `10` | Link bandwidth in Mbps (`0` = unlimited) |
-| `--server` | off | Start the file server on h1 |
-| `--controller-ip` | `127.0.0.1` | Ryu controller address |
-| `--controller-port` | `6653` | Ryu controller port |
-
-### `sdn/controller.py` (run with `ryu-manager`)
-
-| Environment variable | Default | Meaning |
-|----------------------|---------|---------|
-| `POLICY_FILE` | `sdn/policy.json` | Policy to load and watch |
-| `BW_CSV` | `sdn/bandwidth.csv` | Bandwidth log. Use a path that includes a folder, e.g. `BW_CSV=results/bandwidth.csv` |
-| `EVENTS_FILE` | `sdn/events.jsonl` | File the server writes events to and the controller reads (set the same value for both if you change it) |
-| `BLOCK_SECONDS` | `30` | How long an auto-block lasts |
-
----
-
-## SDN policy
-
-`sdn/policy.json` (default):
+Default configuration:
 
 ```json
 {
@@ -360,187 +527,334 @@ Prints one row per tag: number of transfers, failures, min / average / max secon
   "server_port": 9000,
   "default_action": "deny",
   "rules": [
-    {"id": 1, "action": "deny",  "src_ip": "10.0.0.4"},
-    {"id": 2, "action": "allow", "src_ip": "*"}
+    {
+      "id": 1,
+      "action": "deny",
+      "src_ip": "10.0.0.4"
+    },
+    {
+      "id": 2,
+      "action": "allow",
+      "src_ip": "*"
+    }
   ]
 }
 ```
 
-- Rules are checked top to bottom and the **first match wins**; if nothing matches, `default_action` applies. `"*"` matches every client.
-- Each rule becomes two OpenFlow flows (client to server, and the server's replies). The rule at position *k* gets priority `1000 - k`.
-- A `deny` default adds two drop flows at priority 10. A baseline `NORMAL` flow at priority 1 keeps ARP and ping working.
-- The policy covers **TCP traffic to and from the file-server port only**. If you start the server on another port, change `server_port` here too.
-- The file's modification time is checked every 2 s. A valid change reinstalls all flows on every connected switch; an invalid file logs a warning and keeps the old policy.
-- When flows are reinstalled, a client that has just become denied loses its running transfer (TCP retries, then the client times out).
+### Policy behaviour
 
-**Bandwidth monitor:** every 2 s the controller requests port counters and writes the Mbps for each port to `bandwidth.csv`, printing only ports above 0.01 Mbps. `rx`/`tx` are from the **switch's** point of view: on a client's port, `rx` is what the client sends (an upload) and `tx` is what it receives (a download); on the server's port it is the other way round.
+- Rules are evaluated from top to bottom.
+- The first matching rule determines the action.
+- `*` matches every client IP.
+- If no rule matches, `default_action` is applied.
+- Only TCP traffic to and from the configured file-server port is controlled.
+- The controller periodically checks for policy-file modifications.
+- Invalid policy files are rejected, leaving the previous valid policy active.
+
+Each access rule is translated into OpenFlow rules for both client-to-server and server-to-client traffic.
+
+The controller also installs a baseline `NORMAL` flow so that other network traffic, including ARP and ping, continues to work.
+
+### Bandwidth monitoring
+
+The Ryu controller periodically requests port statistics from the switch.
+
+It calculates and records per-port receive and transmit throughput.
+
+The output is stored in:
+
+```text
+sdn/bandwidth.csv
+```
+
+The CSV format is:
+
+```text
+time,switch,port,host,rx_mbps,tx_mbps
+```
+
+The measurements help identify how network traffic is distributed among clients and the server.
 
 ---
 
-## Dynamic SDN: auto-block
+## Concurrent Testing and Performance Analysis
 
-The controller does not only react to edits of `policy.json`: it also reacts **by itself** to something the application observed.
+The project includes tools for evaluating how the file-sharing system behaves under simultaneous client transfers.
 
-```
-client h6 (wrong passwords)        file server (h1)                Ryu controller              switch s1
-        | 3 failed logins ------------> counts per client IP
-        |                              3rd failure: closes the
-        |                              connection and appends a ---> reads events.jsonl
-        |                              line to sdn/events.jsonl      every 0.5 s, validates it
-        |                                                            installs 2 drop flows ---> drops h6 <-> :9000
-        | next connect: timeout                                      (priority 2000,          flows are removed by
-        | ... block time over ...                                     hard_timeout)           the switch itself
-        | access works again                                          logs "expired"
+### Concurrent test tool
+
+```bash
+python3 tests/concurrent_tests.py [--port 9000] HOST THREADS {upload|download} FILE TAG
 ```
 
-**Server side (`server/server.py`).** Failed logins are counted per client **IP** (not per port, because every new connection gets a new port, and not per user name). A successful login resets the counter. At `FAIL_LIMIT` (3) the server resets the counter, appends one JSON line to `sdn/events.jsonl`, replies `Too many failed login attempts` and closes that connection:
+Each test thread:
 
-```json
-{"time": 1794293281.05, "event": "failed_logins", "ip": "10.0.0.6", "count": 3}
+1. Establishes an independent TCP/TLS connection.
+2. Logs in using a separate test account.
+3. Waits at a synchronization barrier.
+4. Performs an upload or download.
+5. Records transfer duration, throughput, and success status.
+
+Uploads use unique filenames. Downloads use separate temporary directories to avoid conflicts.
+
+### Analyse experiment results
+
+```bash
+python3 tests/analyse.py --csv results/transfers.csv
 ```
 
-**Controller side (`sdn/controller.py`).**
+Filter experiments by tag prefix:
 
-- A background loop checks the events file every 0.5 s. It starts reading at the **end** of the file, so events from earlier runs are ignored, and it only consumes complete lines.
-- Every line is validated: invalid JSON, non-object lines, bad or non-IPv4 addresses, loopback addresses and the server's own address are ignored.
-- A valid `failed_logins` event installs two drop flows at **priority 2000** (above every policy rule, which are 1000 and below): client to server port, and the server's replies to the client. Only TCP to the file server is affected, so ping still works and other hosts are not touched.
-- The flows carry an OpenFlow `hard_timeout` (`BLOCK_SECONDS`, default 30), so the **switch itself deletes them** when the time is up. The controller also forgets the block and logs `AUTO-BLOCK expired for <ip>: access restored`.
-- A policy reload deletes every flow and reinstalls the policy. Active blocks are put back with only their **remaining** time, so a reload neither removes nor extends a block.
+```bash
+python3 tests/analyse.py --tag-prefix E2_
+```
 
-Controller log lines: `EVENT from server: ...`, `AUTO-BLOCK <ip> for <n> s`, `AUTO-BLOCK expired for <ip>: access restored`. Check the switch with `sh ovs-ofctl -O OpenFlow13 dump-flows s1 | grep 2000`.
+The analysis reports:
+
+- Number of transfers.
+- Failed transfers.
+- Minimum, average, and maximum transfer duration.
+- Average and slowest-client throughput.
+- Aggregate throughput across the experiment.
+
+Use a different tag for every experiment run to avoid merging results unintentionally.
+
+### Sample performance results
+
+The following measurements were obtained in the Mininet environment using 10 Mbps links and 5 MB downloads.
+
+| Simultaneous clients | Failed transfers | Average time per transfer | Average Mbps per client | Aggregate Mbps |
+|---:|---:|---:|---:|---:|
+| 1 | 0 | 4.73 s | 8.86 | 8.86 |
+| 2 | 0 | 9.19 s | 4.56 | 8.94 |
+| 5 | 0 | 22.94 s | 1.83 | 8.94 |
+| 10 | 0 | 41.06 s | 1.04 | 7.51 |
+| 20 | 0 | 89.03 s | 0.47 | 9.21 |
+
+The aggregate throughput remains close to the configured 10 Mbps link capacity, with some variation due to TCP/TLS overhead and experiment timing.
+
+As the number of simultaneous clients increases, the available bandwidth is shared among them.
+
+All transfers in these runs completed successfully and passed SHA-256 verification.
+
+**Note:** These are measurements from an emulated Mininet environment, not real-world network benchmarks.
 
 ---
 
-## Test results
+## Project Structure
 
-Measured in Mininet with 10 Mbps links, downloading `5MB.bin`, N simultaneous clients spread over h2, h3, h5 and h6 (N = 1 and 2 and 5 from one host). Rows are in `results/transfers.csv`; the table comes from `python3 tests/analyse.py --tag-prefix E2_`.
+```text
+CFSv1/
+│
+├── server/
+│   ├── server.py
+│   ├── auth.py
+│   ├── metadata.py
+│   ├── utils.py
+│   └── users.json
+│
+├── client/
+│   ├── client.py
+│   ├── client2.py
+│   └── utils.py
+│
+├── sdn/
+│   ├── controller.py
+│   ├── topology.py
+│   └── policy.json
+│
+├── tests/
+│   ├── concurrent_tests.py
+│   ├── make_files.py
+│   └── analyse.py
+│
+├── database/
+│   └── .gitkeep
+│
+├── results/
+│
+├── users.json
+├── output.png
+├── output2.png
+└── README.md
+```
 
-| Clients (N) | Failures | Avg seconds per transfer | Avg Mbps per client | Aggregate Mbps |
-|-------------|----------|--------------------------|---------------------|----------------|
-| 1 | 0 | 4.73 | 8.86 | 8.86 |
-| 2 | 0 | 9.19 | 4.56 | 8.94 |
-| 5 | 0 | 22.94 | 1.83 | 8.94 |
-| 10 (`E2_N10_r1`) | 0 | 41.06 | 1.04 | 7.51 |
-| 20 | 0 | 89.03 | 0.47 | 9.21 |
+### Important generated files
 
-The aggregate stays close to the 10 Mbps link limit (a little below it because of TCP/TLS overhead) and each client gets about 9 / N Mbps, so the link is shared evenly. The N = 10 run is an outlier: one host (h6) started about 2 s after the others and finished much later, which stretched the measuring window and lowered the aggregate. All transfers were hash-checked and every run had `failed=0`.
+The following files and directories are created locally during execution:
+
+| File / Directory | Purpose |
+|---|---|
+| `server.crt`, `server.key` | TLS certificate and private key |
+| `metadata.json` | File registry and metadata |
+| `storage/` | Uploaded file storage |
+| `tests/files/` | Generated test files |
+| `sdn/events.jsonl` | Application events consumed by the controller |
+| `sdn/bandwidth.csv` | Network bandwidth measurements |
+| `results/transfers.csv` | Concurrent transfer measurements |
+| `results/server.log` | File-server logs |
+| `ryu-env/` | Ryu Python virtual environment |
+
+Generated files, private keys, and local environments should not be committed to the repository.
 
 ---
 
-## Protocol and data formats
+## Protocol Overview
 
-Every message is **one JSON object per line**, ending with `\n`, at most 4096 bytes. Raw file bytes follow a line only after an `UPLOAD` header (client to server) and after a successful `DOWNLOAD` reply (server to client), and there are exactly `size` of them. TCP is a byte stream with no message boundaries, which is why `size` is always sent first and the receiver reads exactly that many bytes (`ProtocolReader` in `utils.py` keeps any bytes read past the newline for the next read).
+The application uses a simple JSON-based protocol over TCP/TLS.
 
-**Client to server**
+Each control message is a JSON object terminated by a newline. File contents are transferred as raw bytes after the relevant message header.
 
-```json
-{"cmd": "LOGIN", "username": "vamshi", "password": "vamshi"}
-{"cmd": "REGISTER", "username": "alice", "password": "secret"}
-{"cmd": "LIST"}
-{"cmd": "UPLOAD", "name": "report.pdf", "size": 1048576, "sha256": "<64 hex chars>"}
-{"cmd": "DOWNLOAD", "name": "report.pdf"}
-{"cmd": "QUIT"}
-```
+### Client commands
 
-**Server to client**
+| Command | Description |
+|---|---|
+| `LOGIN` | Authenticate a user |
+| `REGISTER` | Register a new user |
+| `LIST` | Retrieve available file metadata |
+| `UPLOAD` | Upload a file |
+| `DOWNLOAD` | Download a file |
+| `QUIT` | Close the session |
 
-```json
-{"status": "OK", "msg": "Login successful"}
-{"status": "OK", "files": {"report.pdf": {"owner": "vamshi", "size": 1048576, "sha256": "...", "uploaded": "2026-11-04 10:02:08", "downloads": 2}}}
-{"status": "OK", "size": 1048576, "sha256": "<64 hex chars>"}
-{"status": "SUCCESS", "msg": "SUCCESS: File received and verified by server."}
-{"status": "ERROR", "msg": "not logged in"}
-```
-
-(The `size` reply is followed by the raw bytes; the `SUCCESS` line is the final reply to an upload.)
-
-**Rules**
-
-- `LOGIN` first: every command except `LOGIN`, `REGISTER` and `QUIT` is refused with `not logged in` until it succeeds. Login state is per connection.
-- After 3 failed logins from the same client IP (counted across connections), the server replies `Too many failed login attempts`, closes the connection and writes a `failed_logins` event to `sdn/events.jsonl` (see [auto-block](#dynamic-sdn-auto-block)).
-- One connection handles many commands in sequence, one at a time. The server drops a connection after 60 s of inactivity.
-- Upload: the client sends the header and then `size` bytes; the server stores them in a `.part.<client>` temp file, checks size and SHA-256, and only then renames it into place and updates the metadata. Uploads of 200 MB or more are rejected.
-- Any logged-in user may download any file; an existing file can only be overwritten by its **owner**. The owner check, rename and metadata update happen under one lock.
-- Download: the client verifies the SHA-256 from the header and discards the file on a mismatch.
-
-**`users.json`** — `{"<username>": "<SHA-256 hex of the password>"}`. The server loads `server/users.json` (falling back to the root copy) and writes both on registration.
-
-**`metadata.json`** — written by the server in its working directory, atomically (temp file, then `os.replace`):
+Example login message:
 
 ```json
 {
-  "report.pdf": {"owner": "vamshi", "size": 1048576, "sha256": "...", "uploaded": "2026-11-04 10:02:08", "downloads": 2}
+  "cmd": "LOGIN",
+  "username": "vamshi",
+  "password": "vamshi"
 }
 ```
 
-**`bandwidth.csv`** (controller): `time,switch,port,host,rx_mbps,tx_mbps`
+Example upload header:
 
-**`sdn/events.jsonl`** (server writes, controller reads): one JSON object per line, `{"time": <unix seconds>, "event": "failed_logins", "ip": "<client ip>", "count": 3}`. It is created at run time and is git-ignored.
+```json
+{
+  "cmd": "UPLOAD",
+  "name": "report.pdf",
+  "size": 1048576,
+  "sha256": "<64 hex characters>"
+}
+```
 
-**`results/transfers.csv`** (test tool): `tag,time,host,user,op,file,size_bytes,seconds,mbps,ok` — `seconds` covers the transfer only (not login or the checksum), `mbps = size_bytes * 8 / seconds / 1e6`, `ok` is 1 or 0.
+The receiver reads the specified number of bytes rather than relying on TCP packet boundaries. This is important because TCP provides a continuous byte stream, not individual application messages.
+
+The implementation uses `ProtocolReader` to handle newline-delimited messages and exact-length byte reads.
+
+### File integrity
+
+For uploads, the client calculates a SHA-256 checksum and sends it with the file metadata.
+
+The server verifies the received file before accepting it into storage.
+
+For downloads, the client verifies the checksum received from the server. A file that fails verification is discarded.
 
 ---
 
-## Project layout
+## Configuration Reference
 
+### File server
+
+```bash
+python3 server/server.py --port 9000
 ```
-CFSv1/
-├── server/
-│   ├── server.py          threaded TLS server and command router
-│   ├── auth.py            login / register, user database
-│   ├── metadata.py        locked, atomic file registry (metadata.json)
-│   ├── utils.py           ProtocolReader (recv_line / recv_exact)
-│   └── users.json
-├── client/
-│   ├── client2.py         CLI client (list / upload / download); imported by the tests
-│   ├── client.py          interactive menu client
-│   └── utils.py           ProtocolReader (same as server/utils.py)
-├── sdn/
-│   ├── topology.py        Mininet topology (+ optional file server on h1)
-│   ├── controller.py      Ryu app: policy rules, live reload, bandwidth monitor, auto-block
-│   └── policy.json            (events.jsonl is created here at run time)
-├── tests/
-│   ├── make_files.py      create random test files in tests/files/
-│   ├── concurrent_tests.py   N simultaneous transfers as user1..user5 -> results/transfers.csv
-│   └── analyse.py         summary table per experiment tag
-├── database/              default storage folder (.gitkeep)
-├── users.json             root copy of the user database
-├── output.png, output2.png   sample run screenshots
-├── results/               transfers.csv (test results), server.log
-└── (created at run time)  server.crt  server.key  metadata.json  storage/  sdn/events.jsonl
+
+| Option | Default | Description |
+|---|---|---|
+| `--port` | `9000` | TCP port used by the file server |
+| `--storage` | `database` | Storage directory name |
+
+The server's storage directory is created inside the project root.
+
+The Mininet topology starts the server using `--storage server/storage`, which results in uploaded files being stored in the project's `storage/` directory.
+
+The failed-login threshold is configured through `FAIL_LIMIT` in `server/server.py` (default: 3).
+
+### Mininet topology
+
+```bash
+sudo python3 sdn/topology.py --server
 ```
+
+| Option | Default | Description |
+|---|---:|---|
+| `--bw` | `10` | Link bandwidth in Mbps; `0` means unlimited |
+| `--server` | Disabled | Start the file server on h1 |
+| `--controller-ip` | `127.0.0.1` | Ryu controller address |
+| `--controller-port` | `6653` | Ryu controller port |
+
+### Ryu controller
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `POLICY_FILE` | `sdn/policy.json` | Access-control policy file |
+| `BW_CSV` | `sdn/bandwidth.csv` | Bandwidth measurement output |
+| `EVENTS_FILE` | `sdn/events.jsonl` | Application event file |
+| `BLOCK_SECONDS` | `30` | Duration of temporary auto-blocking |
+
+If `EVENTS_FILE` is changed, configure the server and controller to use the same path.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause and fix |
-|---------|---------------|
-| `ERROR: Failed to build 'ryu'` / `get_script_args` | Use the install sequence in [setup step 3](#3-create-the-ryu-virtual-environment) |
-| `ryu-manager` reports Ryu `2.2`, or `No module named 'oslo'` | pip fell back to an ancient release. Reinstall with `pbr` present and `ryu==4.34` pinned |
-| `connection failed: [Errno 111] Connection refused` | The server isn't running. Look at `results/server.log` (or the server terminal): a missing `server.crt` / `server.key` in the project root makes it exit at start-up with `FileNotFoundError` (setup step 4) |
-| `connection timed out (blocked by network policy?)` | The client's IP is denied by `policy.json` (h4 by default), the controller isn't running, or the switch has no flows. Check the controller log and `sh ovs-ofctl -O OpenFlow13 dump-flows s1` |
-| `*** Unknown command: mininet> h2 ...` | The `mininet>` prompt was pasted along with the command |
-| Controller stops after `sudo mn -c` | `mn -c` kills `ryu-manager`. Run it before starting the controller |
-| `Address already in use` (6653 or 9000) | Leftover state: `sudo mn -c`, then check `pgrep -af ryu-manager` and `pgrep -af server.py` |
-| `Permission denied` on `metadata.json`, `storage/` or `results/` | They were created by processes run under `sudo` (the Mininet demo). Run `sudo chown -R "$USER": .` |
-| `Switch None disconnected` in the controller log at start-up | Harmless; it appears in a normal run |
-| No `AUTO-BLOCK` line after 3 failed logins | Check that `sdn/events.jsonl` got a new line. If not, the server is not running the current `server.py` (restart it). If yes, restart the controller: it only reads events written after it started. Loopback addresses (localhost tests) are ignored on purpose |
-| The block vanished before I looked | It lasts `BLOCK_SECONDS` (30 by default) and the switch removes it itself. Start the controller with `BLOCK_SECONDS=120` for demos |
-| `dump-flows` shows nothing at the `mininet>` prompt | Use `sh ovs-ofctl -O OpenFlow13 dump-flows s1` (the `sh` prefix is required; plain `dump-flows` is not a Mininet command) |
-| All hosts unreachable and no `Switch 1 connected` after editing `controller.py` | Never name a method `_event_loop` (or other Ryu-internal names such as `events` or `threads`) in the controller class: Ryu's own event dispatcher is called `_event_loop` and overriding it stops all handlers. The file-reading loop is called `_server_event_loop` |
+| Problem | Possible solution |
+|---|---|
+| Ryu installation fails with `get_script_args` | Follow the pinned setuptools and Ryu installation sequence in the setup section. |
+| Ryu reports version `2.2` | Reinstall using `pbr` and explicitly pin `ryu==4.34`. |
+| Connection refused on port 9000 | Check whether the server is running and whether the TLS certificate files exist. |
+| Client connection times out | Check the SDN policy, controller logs, and installed switch flows. |
+| `Unknown command: mininet>` | Do not include the `mininet>` prompt when copying commands. |
+| Controller stops after `sudo mn -c` | Start the controller after Mininet cleanup. |
+| Address already in use | Check for leftover server or controller processes. |
+| Permission denied on generated files | Files may have been created using `sudo`. Run `sudo chown -R "$USER": .` from the project root. |
+| No auto-block event appears | Check `sdn/events.jsonl` and ensure the controller started before the event was generated. |
+| Auto-block expires too quickly | Set `BLOCK_SECONDS=120` when starting the controller for demonstrations. |
+| No flows appear in Mininet | Run `sh ovs-ofctl -O OpenFlow13 dump-flows s1` from the Mininet prompt. |
 
 ---
 
-## Limitations
+## Current Limitations and Security Considerations
 
-- **Passwords** are stored as unsalted SHA-256 hashes (not a slow, salted hash such as PBKDF2). TLS protects them in transit, but the clients skip certificate verification (`CERT_NONE`) because the certificate is self-signed.
-- **Access policy is by source IP**, which can be spoofed on a real network. Changing the policy reinstalls all flows, which interrupts running transfers of newly denied clients.
-- One switch, one controller (a single point of failure), one thread per client connection.
-- Everything runs on one computer with emulated links, so absolute throughput numbers are not real-network numbers; at 10 Mbps the CPU is not the bottleneck, at much higher link speeds it becomes part of the result.
-- **Auto-block is by source IP**: IPs can be spoofed, and several users behind one IP are blocked together. The only trigger is repeated failed logins; the bandwidth monitor only logs and does not react.
-- The server tells the controller through a shared file (`sdn/events.jsonl`). That works because Mininet hosts and the controller run on one machine; a real deployment would use a network API (for example Ryu's REST application).
-- The failed-login counter is kept in server memory (it is lost when the server restarts) and is reset by a successful login or when it reaches the limit.
-- There is no switch to turn the auto-block off, so a built-in comparison against a static-policy baseline is not provided.
-- No `DELETE` command.
+CFSv1 is an experimental project demonstrating concurrent file sharing and SDN-based network control. It is not intended to be deployed as a production file-sharing service.
+
+Known limitations include:
+
+- **Password storage:** Passwords are currently stored as unsalted SHA-256 hashes. A production implementation should use a dedicated password-hashing algorithm such as Argon2id, scrypt, or PBKDF2 with unique salts.
+- **TLS certificate verification:** The clients currently skip server certificate verification because the demonstration uses a self-signed certificate. Production deployments must validate server certificates.
+- **IP-based access control:** Access policies and automatic blocking use source IP addresses. IP-based identity can be spoofed, and multiple users sharing an IP may be affected together.
+- **Single-switch topology:** The current demonstration uses one Open vSwitch and one Ryu controller.
+- **Thread-per-client model:** The server creates a separate thread for each client connection.
+- **Shared event file:** The application communicates failed-login events to the controller through `sdn/events.jsonl`. This works in the local Mininet environment, but a distributed deployment would need a network-based event mechanism.
+- **In-memory failed-login tracking:** Failed-login counters are lost when the server restarts.
+- **Limited security triggers:** Automatic blocking currently responds to repeated failed logins. Bandwidth monitoring is observational and does not trigger automatic traffic shaping or blocking.
+- **Emulated performance:** Mininet throughput measurements do not represent real-world network performance.
+- **Limited file operations:** The current application supports listing, uploading, and downloading files; a delete operation is not implemented.
+
+These limitations provide clear directions for future improvements, including stronger authentication, certificate validation, distributed event communication, more advanced SDN policies, and expanded file-management functionality.
+
+---
+
+## Future Improvements
+
+Potential extensions include:
+
+- Stronger password hashing and proper TLS certificate validation.
+- More granular user and file permissions.
+- Support for file deletion and additional file operations.
+- Rate limiting and bandwidth-aware traffic policies.
+- More advanced SDN policies based on traffic patterns.
+- Persistent failed-login tracking.
+- A network-based interface between the application and controller.
+- Multi-switch and multi-controller topologies.
+- Testing under larger client loads and more realistic network conditions.
+
+---
+
+## Contributors
+
+Developed as a Computer Networks and Software-Defined Networking project.
+
+**Repository:** [CNJackfruit/CFSv1](https://github.com/CNJackfruit/CFSv1)
+
 
